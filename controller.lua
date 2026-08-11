@@ -2,11 +2,11 @@
 
 ---------------------------------------------------------------------------
 -- global variables
-TARGET_DIST = 80 -- the target distance between robots, in cm
+TARGET_DIST = 50 -- the target distance between robots, in cm
 EPSILON = 50 -- a coefficient to increase the force of the repulsion/attraction function
 WHEEL_SPEED = 5 -- max wheel speed
 
-ACCEPTED_DIST = 10 -- range of accepted distance around the target distance
+ACCEPTED_DIST = 5 -- range of accepted distance around the target distance
 NEIGHBORS_AT_TARG_DIST = 4 -- minimum number of neighbors that must be at the right distance for the grouping condition to be verified
 FLOCKING_TRIGGER_THRESHOLD = 50 -- number of consecutive timesteps in which the grouping condition must hold before switching to flocking
 ORIENTATION_STEPS = 50 -- number of steps to rotate toward the light before moving
@@ -17,6 +17,9 @@ STATE_GROUPING = 1
 STATE_FLOCKING = 2
 orientation_counter = 0
 flocking_trigger_counter = 0
+group_wander_counter = 0
+group_wander_angle = 0
+one_neighbor_far = false
 
 
 LOG_FILE = "tunnel.log"
@@ -49,6 +52,7 @@ function step()
 		-- second phase: group while staying near the light
 		total_vector[1] = lj_vector[1] + 0.3 * light_vector[1]
 		total_vector[2] = lj_vector[2] + 0.3 * light_vector[2]
+
 		if(FLOCKING_CONDITION == 1) then
 			flocking_trigger_counter = flocking_trigger_counter + 1
 			if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
@@ -59,23 +63,40 @@ function step()
 		end
 	else
 		-- third phase: flock once grouped near the light
-		total_vector[1] = lj_vector[1] - 0.7 * light_vector[1]
-		total_vector[2] = lj_vector[2] - 0.7 * light_vector[2]
+		if(one_neighbor_far == false) then
+			total_vector[1] = lj_vector[1] - 0.7 * light_vector[1]
+			total_vector[2] = lj_vector[2] - 0.7 * light_vector[2]
+			group_wander_counter = 0
+		else
+			if(group_wander_counter <= 0) then
+				group_wander_counter = robot.random.uniform_int(50, 100)
+				group_wander_angle = robot.random.uniform(-math.pi, math.pi)
+			end
+			group_wander_counter = group_wander_counter - 1
+			total_vector[1] = math.cos(group_wander_angle) - 0.3 * light_vector[1]
+			total_vector[2] = math.sin(group_wander_angle) - 0.7 * light_vector[2]
+		end		
 	end
 
 	target_angle = math.atan2(total_vector[2],total_vector[1]) -- compute the angle from the vector
 	speeds = ComputeSpeedFromAngle(target_angle) -- we now compute the wheel speed necessary to go in the direction of the target angle
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
-		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- move slowly while centering between light and obstacles
+		robot.wheels.set_velocity(0.6 * speeds[1], 0.6 * speeds[2]) -- move slowly while centering between light and obstacles
+	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
+		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- gently follow a single distant neighbor without forming pairs
 	else
-		robot.wheels.set_velocity(speeds[1],speeds[2]) -- actuate wheels to move
+		if (one_neighbor_far) then
+			robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) 
+		else
+			robot.wheels.set_velocity(speeds[1], speeds[2]) -- actuate wheels to move
+		end
+
 	end
 	robot.range_and_bearing.clear_data() -- forget about all received messages for next step
     current_step = current_step + 1
     logf = io.open(LOG_FILE, "a")
-
-	if (robot.id==ID or logf and current_step%1==0) then
-		logf:write(string.format("id=%s, step=%d, light_strength=%.4f, state=%d, flocking_condition=%d, flocking_counter=%d\n", robot.id, current_	step, light_strength, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter))
+	if (robot.id==ID and logf and current_step%1==0) then
+		logf:write(string.format("id=%s, step=%d, light_strength=%.4f, state=%d, flocking_condition=%d, flocking_counter=%d\n", robot.id, current_step, light_strength, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter))
 		logf:flush()
 	end
 end
@@ -163,6 +184,8 @@ function ProcessRAB_LJ()
    FLOCKING_CONDITION = 0
    sum_vector = {0,0}
    neighbors_in_range_counter = 0
+   furthest_neighbor_range = 0
+   one_neighbor_far = false
    for i = 1,#robot.range_and_bearing do -- for each robot seen
       lj_value = ComputeLennardJones(robot.range_and_bearing[i].range) -- compute the lennard-jones value
       sum_vector[1] = sum_vector[1] + math.cos(robot.range_and_bearing[i].horizontal_bearing)*lj_value -- sum the x components of the vectors
@@ -171,9 +194,18 @@ function ProcessRAB_LJ()
       	neighbors_in_range_counter = neighbors_in_range_counter + 1
       	if(neighbors_in_range_counter >= NEIGHBORS_AT_TARG_DIST) then
       		FLOCKING_CONDITION = 1
-      	end
+    	end
       end		
+	  if(robot.range_and_bearing[i].range > furthest_neighbor_range) then
+	    furthest_neighbor_range = robot.range_and_bearing[i].range
+	  end
    end
+
+	if(BEHAVIOR_STATE == STATE_FLOCKING and neighbors_in_range_counter == 1 and furthest_neighbor_range > TARGET_DIST + ACCEPTED_DIST) then
+		one_neighbor_far = true
+		sum_vector[1] = sum_vector[1] * 4/3
+		sum_vector[2] = sum_vector[2] * 4/3
+	end
 	return sum_vector
 end
 ---------------------------------------------------------------------------
@@ -205,6 +237,9 @@ function reset()
 	BEHAVIOR_STATE = STATE_ORIENT
 	orientation_counter = 0
 	flocking_trigger_counter = 0
+	group_wander_counter = 0
+	group_wander_angle = 0
+	one_neighbor_far = false
     logf = io.open(LOG_FILE, "w")
     if (logf) then
         logf:write("controller started\n")
