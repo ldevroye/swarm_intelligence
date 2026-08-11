@@ -2,29 +2,25 @@
 
 ---------------------------------------------------------------------------
 -- global variables
-TARGET_DIST = 50 -- the target distance between robots, in cm
+TARGET_DIST = 80 -- the target distance between robots, in cm
 EPSILON = 50 -- a coefficient to increase the force of the repulsion/attraction function
 WHEEL_SPEED = 5 -- max wheel speed
 
 ACCEPTED_DIST = 10 -- range of accepted distance around the target distance
 NEIGHBORS_AT_TARG_DIST = 4 -- minimum number of neighbors that must be at the right distance for the grouping condition to be verified
-LIGHT_GROUP_THRESHOLD = 0.5 -- minimum light intensity needed to consider the robot as being near the light
-LIGHT_FLOCK_THRESHOLD = 0.35 -- minimum light intensity needed to switch to flocking after grouping
-ORIENTATION_STEPS = 20 -- number of steps to rotate toward the light before moving
+FLOCKING_TRIGGER_THRESHOLD = 50 -- number of consecutive timesteps in which the grouping condition must hold before switching to flocking
+ORIENTATION_STEPS = 50 -- number of steps to rotate toward the light before moving
 FLOCKING_CONDITION = 0
 BEHAVIOR_STATE = 0 -- 0 = orient to light, 1 = grouping, 2 = flocking
 STATE_ORIENT = 0
 STATE_GROUPING = 1
 STATE_FLOCKING = 2
 orientation_counter = 0
+flocking_trigger_counter = 0
 
 
 LOG_FILE = "tunnel.log"
 logf = io.open(LOG_FILE, "w")
-if (logf) then
-	logf:write("controller started\n")
-	logf:flush()
-end
 current_step = 0;
 
 ---------------------------------------------------------------------------
@@ -51,8 +47,13 @@ function step()
 		-- second phase: group while staying near the light
 		total_vector[1] = lj_vector[1] + 0.3 * light_vector[1]
 		total_vector[2] = lj_vector[2] + 0.3 * light_vector[2]
-		if(FLOCKING_CONDITION == 1 and light_strength > LIGHT_FLOCK_THRESHOLD) then
+		if(FLOCKING_CONDITION == 1) then
+			flocking_trigger_counter = flocking_trigger_counter + 1
+			if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
 			BEHAVIOR_STATE = STATE_FLOCKING
+			end
+		else
+			flocking_trigger_counter = 0
 		end
 	else
 		-- third phase: flock once grouped near the light
@@ -70,8 +71,8 @@ function step()
 	robot.range_and_bearing.clear_data() -- forget about all received messages for next step
     current_step = current_step + 1
     logf = io.open(LOG_FILE, "a")
-	if (logf and current_step%50==0) then
-		logf:write(string.format("light_strength=%.4f state=%d\n", light_strength, BEHAVIOR_STATE))
+	if (tonumber(robot.id) == 1 and logf and current_step%50==0) then
+		logf:write(string.format("light_strength=%.4f state=%d flocking_condition=%d flocking_counter=%d\n", light_strength, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter))
 		logf:flush()
 	end
 end
@@ -184,6 +185,7 @@ function reset()
 	robot.colored_blob_omnidirectional_camera.enable()
 	BEHAVIOR_STATE = STATE_ORIENT
 	orientation_counter = 0
+	flocking_trigger_counter = 0
     logf = io.open(LOG_FILE, "w")
     if (logf) then
         logf:write("controller started\n")
