@@ -23,28 +23,6 @@ Behavioral assumptions (tied to sources)
 - Localized communication uses `robot.range_and_bearing` with limited payload and line-of-sight (foot-bot reference).
 - Motor/proximity/ground sensor ranges and formats follow `doc/txt/footbot.txt`.
 
-Open questions / blockers
-- Final project task specification (objective, success metrics, arena layout) is not present in repo — need user to provide or confirm.
-- Target number of robots and required experiments (scalability/parameters) unknown.
-- Any restrictions on using C++ vs Lua controllers? Current repo already compiles a C++ experiment (`tunnelling.cpp`), but course uses Lua controllers.
-
-Latest change
-- Enabled light-sensor rays in [script.argos](script.argos) so the light readings are visible during simulation debugging.
-
-Implementation plan (next steps)
-1. Define final task and success criteria with user (choice of objective: aggregation, pattern formation, collective decision, task-specific like tunnelling).
-2. Extract reusable controller primitives from exercises (modules):
-	- `sensors.lua`: safe wrappers for `robot.*` access (proximity, ground, RAB, blobs, light).
-	- `motion.lua`: wheel speed helpers and angle→wheel conversion.
-	- `communication.lua`: RAB helpers (set/clear data, vector extraction).
-3. Implement base behaviors as modular Lua components:
-	- `random_walk`, `obstacle_avoidance`, `aggregation`, `lj_pattern_formation`.
-4. Compose final controller from modules and tune parameters in simulation snapshots.
-5. Add experiments (.argos) and scripts to run parameter sweeps and collect `output.txt` metrics.
-
-Next immediate step (I will do now if you approve)
-- Produce a concise implementation scaffold: `doc/context.md` (this file), a `controllers/` folder with the modular Lua files skeleton, and example `.argos` to run one baseline experiment (aggregation). Confirm target task first.
-
 Developer instructions
 - Only modify/create/remove Lua controllers (`.lua`) in the `controllers/` folder. Do NOT edit C/C++ source or header files (`.c`, `.cpp`, `.h`).
 - The current controller to run is `controllers/tunnelling.lua`; `tunnelling.argos` is preloaded to execute it.

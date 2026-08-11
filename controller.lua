@@ -22,6 +22,7 @@ flocking_trigger_counter = 0
 LOG_FILE = "tunnel.log"
 logf = io.open(LOG_FILE, "w")
 current_step = 0;
+ID = "fb1"
 
 ---------------------------------------------------------------------------
 
@@ -32,13 +33,14 @@ function step()
 	robot.range_and_bearing.set_data(1,1) -- first we send something, to make sure the other robots see us
 	lj_vector = ProcessRAB_LJ() -- then we compute the angle to follow, using the other robots as input, see function code for details
 	light_vector = ComputeVectorToLight() -- we compute the vector towards the light source
+	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
 	light_strength = GetLightStrength()
 	total_vector = {0,0}
 
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
-		-- first phase: rotate toward the light without moving
-		total_vector[1] = light_vector[1]
-		total_vector[2] = light_vector[2]
+		-- first phase: move toward the light while staying away from nearby obstacles
+		total_vector[1] = light_vector[1] + 0.5 * obstacle_vector[1]
+		total_vector[2] = light_vector[2] + 0.5 * obstacle_vector[2]
 		orientation_counter = orientation_counter + 1
 		if(orientation_counter >= ORIENTATION_STEPS) then
 			BEHAVIOR_STATE = STATE_GROUPING
@@ -57,22 +59,23 @@ function step()
 		end
 	else
 		-- third phase: flock once grouped near the light
-		total_vector[1] = lj_vector[1] + 0.5 * light_vector[1]
-		total_vector[2] = lj_vector[2] + 0.5 * light_vector[2]
+		total_vector[1] = lj_vector[1] - 0.7 * light_vector[1]
+		total_vector[2] = lj_vector[2] - 0.7 * light_vector[2]
 	end
 
 	target_angle = math.atan2(total_vector[2],total_vector[1]) -- compute the angle from the vector
 	speeds = ComputeSpeedFromAngle(target_angle) -- we now compute the wheel speed necessary to go in the direction of the target angle
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
-		robot.wheels.set_velocity(0, 0) -- stay still while orienting toward the light
+		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- move slowly while centering between light and obstacles
 	else
 		robot.wheels.set_velocity(speeds[1],speeds[2]) -- actuate wheels to move
 	end
 	robot.range_and_bearing.clear_data() -- forget about all received messages for next step
     current_step = current_step + 1
     logf = io.open(LOG_FILE, "a")
-	if (tonumber(robot.id) == 1 and logf and current_step%50==0) then
-		logf:write(string.format("light_strength=%.4f state=%d flocking_condition=%d flocking_counter=%d\n", light_strength, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter))
+
+	if (robot.id==ID or logf and current_step%1==0) then
+		logf:write(string.format("id=%s, step=%d, light_strength=%.4f, state=%d, flocking_condition=%d, flocking_counter=%d\n", robot.id, current_	step, light_strength, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter))
 		logf:flush()
 	end
 end
@@ -99,6 +102,22 @@ function ComputeVectorToLight()
 	end
 	return light_v
 end	
+
+---------------------------------------------------------------------------
+-- This function computes a repulsion vector from nearby obstacles using the proximity sensors.
+function ComputeVectorFromProximity()
+	prox_v = {0,0}
+	for i = 1, 24 do
+		prox_v[1] = prox_v[1] - robot.proximity[i].value * math.cos(robot.proximity[i].angle)
+		prox_v[2] = prox_v[2] - robot.proximity[i].value * math.sin(robot.proximity[i].angle)
+	end
+	len = math.sqrt(prox_v[1] * prox_v[1] + prox_v[2] * prox_v[2])
+	if(len ~= 0) then
+		prox_v[1] = prox_v[1] / len
+		prox_v[2] = prox_v[2] / len
+	end
+	return prox_v
+end
 
 ---------------------------------------------------------------------------
 -- This function returns the strongest light reading seen by the sensors.
