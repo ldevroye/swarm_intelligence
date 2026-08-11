@@ -2,21 +2,24 @@
 
 ---------------------------------------------------------------------------
 -- global variables
-TARGET_DIST = 80 -- the target distance between robots, in cm
+TARGET_DIST = 50 -- the target distance between robots, in cm
 EPSILON = 50 -- a coefficient to increase the force of the repulsion/attraction function
-WHEEL_SPEED = 5 -- max wheel speed
+WHEEL_SPEED = 10 -- max wheel speed
 
 ACCEPTED_DIST = 10 -- range of accepted distance around the target distance
 NEIGHBORS_AT_TARG_DIST = 4 -- minimum number of neighbors that must be at the right distance for the grouping condition to be verified
 FLOCKING_TRIGGER_THRESHOLD = 50 -- number of consecutive timesteps in which the grouping condition must hold before switching to flocking
 ORIENTATION_STEPS = 50 -- number of steps to rotate toward the light before moving
+BLACK_FLOOR_STEPS = 10 -- number of consecutive timesteps on black before committing to the target zone
 FLOCKING_CONDITION = 0
-BEHAVIOR_STATE = 0 -- 0 = orient to light, 1 = grouping, 2 = flocking
+BEHAVIOR_STATE = 0 -- 0 = orient to light, 1 = grouping, 2 = tunnel, 3 = flocking on black
 STATE_ORIENT = 0
 STATE_GROUPING = 1
-STATE_FLOCKING = 2
+STATE_TUNNEL = 2
+STATE_FLOCKING = 3
 orientation_counter = 0
 flocking_trigger_counter = 0
+black_floor_counter = 0
 
 
 LOG_FILE = "tunnel.log"
@@ -34,6 +37,7 @@ function step()
 	lj_vector = ProcessRAB_LJ() -- then we compute the angle to follow, using the other robots as input, see function code for details
 	light_vector = ComputeVectorToLight() -- we compute the vector towards the light source
 	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
+	ground_vector, black_ground_count = ProcessGround() -- use the floor sensors to bias motion into the black target area
 	total_vector = {0,0}
 
 	to_log = string.format("light {%.4f, %.4f}\n", light_vector[1], light_vector[2])
@@ -48,27 +52,46 @@ function step()
 			BEHAVIOR_STATE = STATE_GROUPING
 		end
 	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
-		-- second phase: group while staying near the light
-		total_vector[1] = lj_vector[1] + 0.3 * light_vector[1]
-		total_vector[2] = lj_vector[2] + 0.3 * light_vector[2]
+		-- second phase: keep the pack together while continuing to use obstacle edges as a guide
+		obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
+		total_vector[1] = lj_vector[1] - 0.20 * light_vector[1] + 0.45 * obstacle_tangent[1]
+		total_vector[2] = lj_vector[2] - 0.20 * light_vector[2] + 0.45 * obstacle_tangent[2]
 		if(FLOCKING_CONDITION == 1) then
 			flocking_trigger_counter = flocking_trigger_counter + 1
 			if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
-				BEHAVIOR_STATE = STATE_FLOCKING
+				BEHAVIOR_STATE = STATE_TUNNEL
 			end
 		else
 			flocking_trigger_counter = 0
 		end
+	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
+		-- third phase: use obstacle repulsion and floor cues to find a gap instead of pushing through it
+		total_vector[1] = lj_vector[1] - 0.55 * light_vector[1] + 1.30 * obstacle_vector[1] + 0.80 * ground_vector[1]
+		total_vector[2] = lj_vector[2] - 0.55 * light_vector[2] + 1.30 * obstacle_vector[2] + 0.80 * ground_vector[2]
+		if(black_ground_count > 0) then
+			black_floor_counter = black_floor_counter + 1
+		else
+			black_floor_counter = 0
+		end
+		if(black_floor_counter >= BLACK_FLOOR_STEPS) then
+			BEHAVIOR_STATE = STATE_FLOCKING
+		end
 	else
-		-- third phase: flock once grouped near the light
-		total_vector[1] = lj_vector[1] - 0.7 * light_vector[1]
-		total_vector[2] = lj_vector[2] - 0.7 * light_vector[2]
+		-- final phase: stay compact on the black floor while continuing to avoid obstacles
+		total_vector[1] = lj_vector[1] + 0.90 * ground_vector[1] + 1.10 * obstacle_vector[1] - 0.15 * light_vector[1]
+		total_vector[2] = lj_vector[2] + 0.90 * ground_vector[2] + 1.10 * obstacle_vector[2] - 0.15 * light_vector[2]
+		if(black_ground_count == 0) then
+			BEHAVIOR_STATE = STATE_TUNNEL
+			black_floor_counter = 0
+		end
 	end
 
 	target_angle = math.atan2(total_vector[2],total_vector[1]) -- compute the angle from the vector
 	speeds = ComputeSpeedFromAngle(target_angle) -- we now compute the wheel speed necessary to go in the direction of the target angle
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
 		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- move slowly while centering between light and obstacles
+	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
+		robot.wheels.set_velocity(0.7 * speeds[1], 0.7 * speeds[2]) -- slow down to stay aligned with the tunnel entrance
 	else
 		robot.wheels.set_velocity(speeds[1],speeds[2]) -- actuate wheels to move
 	end
@@ -118,6 +141,39 @@ function ComputeVectorFromProximity()
 		prox_v[2] = prox_v[2] / len
 	end
 	return prox_v
+end
+
+---------------------------------------------------------------------------
+-- This function computes a tangent vector around obstacles so the swarm can
+-- move along the white-zone obstacle field instead of pushing straight through it.
+function ComputeObstacleTangent(obstacle_v)
+	tangent_v = {0,0}
+	len = math.sqrt(obstacle_v[1] * obstacle_v[1] + obstacle_v[2] * obstacle_v[2])
+	if(len ~= 0) then
+		tangent_v[1] = obstacle_v[2]
+		tangent_v[2] = -obstacle_v[1]
+	end
+	return tangent_v
+end
+
+---------------------------------------------------------------------------
+-- This function computes a vector toward the black floor using the motor-ground sensors.
+function ProcessGround()
+	ground_v = {0,0}
+	black_count = 0
+	for i = 1, 4 do
+		if(robot.motor_ground[i].value == 0) then
+			black_count = black_count + 1
+			ground_v[1] = ground_v[1] + robot.motor_ground[i].offset.x
+			ground_v[2] = ground_v[2] + robot.motor_ground[i].offset.y
+		end
+	end
+	len = math.sqrt(ground_v[1] * ground_v[1] + ground_v[2] * ground_v[2])
+	if(len ~= 0) then
+		ground_v[1] = ground_v[1] / len
+		ground_v[2] = ground_v[2] / len
+	end
+	return ground_v, black_count
 end
 
 ---------------------------------------------------------------------------
@@ -212,6 +268,7 @@ function reset()
 	BEHAVIOR_STATE = STATE_ORIENT
 	orientation_counter = 0
 	flocking_trigger_counter = 0
+	black_floor_counter = 0
     logf = io.open(LOG_FILE, "w")
     if (logf) then
         logf:write("controller started\n")
