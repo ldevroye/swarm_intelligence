@@ -6,7 +6,7 @@
   <!-- ************************* -->
   <framework>
     <!-- To make ARGoS faster, you can set 'threads' to some number greater than 0 -->
-    <system threads="8" />
+    <system threads="0" />
     <!-- To change the random seed for each experiment repetition, you can set 'random_seed' to whatever value you like -->
     <experiment length="1000" ticks_per_second="10" random_seed="0" />
   </framework>
@@ -42,12 +42,11 @@
         <footbot_turret_encoder implementation="default" />
         <footbot_light implementation="rot_z_only" show_rays="false" />
 		<footbot_motor_ground implementation="rot_z_only" />
-        <range_and_bearing implementation="medium" medium="rab" show_rays="true" />
+        <range_and_bearing implementation="medium" medium="rab" show_rays="false" />
       </sensors>
-      <params />
       <!-- If you want to execute ARGoS with a script preloaded, use this syntax
            Note: the preloaded script does not appear in the Lua editor! (that's a TODO) -->
-      <!--params script="controller.lua"/-->
+      <params script="controller.lua"/>
     </lua_controller>
   </controllers>
 
@@ -151,6 +150,7 @@
   <!-- * Visualization * -->
   <!-- ****************** -->
   <visualization>
+  <!--
     <qt-opengl lua_editor="true">
       <camera>
 		<placements>
@@ -158,6 +158,7 @@
 		</placements>
       </camera>
     </qt-opengl>
+  -->
   </visualization>
 
 </argos-configuration>
