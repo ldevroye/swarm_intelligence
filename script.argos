@@ -6,7 +6,7 @@
   <!-- ************************* -->
   <framework>
     <!-- To make ARGoS faster, you can set 'threads' to some number greater than 0 -->
-    <system threads="8" />
+    <system threads="4" />
     <!-- To change the random seed for each experiment repetition, you can set 'random_seed' to whatever value you like -->
     <experiment length="1000" ticks_per_second="10" random_seed="0" />
   </framework>
