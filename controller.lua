@@ -94,10 +94,10 @@ function step()
 	end
 	robot.range_and_bearing.clear_data() -- forget about all received messages for next step
     current_step = current_step + 1
-    logf = io.open(LOG_FILE, "a")
-	if (robot.id==ID and logf and current_step%1==0) then
-		logf:write(string.format("id=%s, step=%d, light_strength=%.4f, state=%d, flocking_condition=%d, flocking_counter=%d\n", robot.id, current_step, light_strength, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter))
-		logf:flush()
+	if (current_step%1==0) then
+		to_format = "id=%s, step=%d, light_strength=%.4f, state=%d, flocking_condition=%d, flocking_counter=%d\n"
+		log = string.format(to_format, robot.id, current_step, light_strength, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter)
+		add_log(log)
 	end
 end
 
@@ -249,4 +249,12 @@ end
 
 --nothing to destroy
 function destroy()
+end
+
+function add_log(log)
+	logf = io.open(LOG_FILE, "a")
+	if (robot.id==ID and logf) then
+		logf:write(log)
+		logf:flush()
+	end
 end
