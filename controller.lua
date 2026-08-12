@@ -1,4 +1,4 @@
----- MINE
+---- hihi
 
 ---------------------------------------------------------------------------
 -- global variables
@@ -8,7 +8,7 @@ WHEEL_SPEED = 10 -- max wheel speed
 
 ACCEPTED_DIST = 10 -- range of accepted distance around the target distance
 NEIGHBORS_AT_TARG_DIST = 3 -- minimum number of neighbors that must be at the right distance for the grouping condition to be verified
-FLOCKING_TRIGGER_THRESHOLD = 80 -- number of consecutive timesteps in which the grouping condition must hold before switching to the black-zone phase
+FLOCKING_TRIGGER_THRESHOLD = 40 -- number of consecutive timesteps in which the grouping condition must hold before switching to the black-zone phase
 ORIENTATION_STEPS = 50 -- number of steps to rotate toward the light before moving
 BLACK_FLOOR_STEPS = 10 -- number of consecutive timesteps on black before committing to the target zone
 OBSTACLE_FRONT_THRESHOLD = 0.08 -- proximity threshold for deciding that an obstacle is directly in front
@@ -41,7 +41,7 @@ obstacle_elapsed = 0
 ID = robot.id
 directory="logs/"
 LOG_FILE = directory..ID..".log"
-logf = io.open(LOG_FILE, "w")
+logf = nil
 current_step = 0;
 
 ---------------------------------------------------------------------------
@@ -286,8 +286,8 @@ function HandleObstacle()
 		end
 		obstacle_counter = obstacle_counter + 1
 		obstacle_elapsed = obstacle_elapsed + 1
-		if((obstacle_counter >= OBSTACLE_APPROACH_STEPS and obstacle_contact >= OBSTACLE_CONTACT_THRESHOLD) or 
-		  (close_count >= 2 and front_obstacle)) then
+				if((obstacle_counter >= OBSTACLE_APPROACH_STEPS and obstacle_contact >= OBSTACLE_CONTACT_THRESHOLD) or 
+					(front_close_count >= 2 and front_obstacle)) then
 			-- Enough sustained contact: switch to the locking phase.
 			obstacle_state = 2
 			obstacle_counter = 0
@@ -473,7 +473,16 @@ function ComputeSpeedFromAngle(angle)
     -- the final wheel speeds are compute combining the forward and angular velocities, with different signs for the left and right wheel.
     speeds = {dotProduct * WHEEL_SPEED - angularVelocity * wheelsDistance, dotProduct * WHEEL_SPEED + angularVelocity * wheelsDistance}
 
-    return speeds
+	-- clamp wheel speeds to allowed range
+	for i = 1, 2 do
+		if speeds[i] > WHEEL_SPEED then
+			speeds[i] = WHEEL_SPEED
+		elseif speeds[i] < -WHEEL_SPEED then
+			speeds[i] = -WHEEL_SPEED
+		end
+	end
+
+	return speeds
 end
 ---------------------------------------------------------------------------
 
@@ -513,7 +522,14 @@ end
 -- This function take the distance and compute the lennard-jones potential.
 -- The parameters are defined at the top of the script
 function ComputeLennardJones(distance)
-   return -(4*EPSILON/distance * (math.pow(TARGET_DIST/distance,4) - math.pow(TARGET_DIST/distance,2)));
+	if(distance == nil) then
+		return 0
+	end
+	-- avoid division by zero / extremely small distances
+	if(distance < 0.01) then
+		distance = 0.01
+	end
+	return -(4*EPSILON/distance * (math.pow(TARGET_DIST/distance,4) - math.pow(TARGET_DIST/distance,2)));
 end
 ---------------------------------------------------------------------------
 
@@ -546,7 +562,9 @@ function reset()
 	obstacle_cooldown = 0
 	obstacle_contact = 0
 	obstacle_elapsed = 0
-    logf = io.open(LOG_FILE, "w")
+	-- ensure logs directory exists and open per-robot log
+	os.execute("mkdir -p "..directory)
+	logf = io.open(LOG_FILE, "w")
     if (logf) then
         logf:write("controller started\n")
         logf:flush()
