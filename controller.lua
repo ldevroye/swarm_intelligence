@@ -35,10 +35,11 @@ obstacle_cooldown = 0
 obstacle_contact = 0
 
 
-LOG_FILE = "tunnel.log"
+ID = robot.id
+directory="logs/"
+LOG_FILE = directory..ID..".log"
 logf = io.open(LOG_FILE, "w")
 current_step = 0;
-ID = "fb1"
 
 ---------------------------------------------------------------------------
 
@@ -85,7 +86,7 @@ end
 ---------------------------------------------------------------------------
 -- Log the start of each step once, before any setup or state handling.
 function LogStepStart()
-	to_log = string.format("id=%s, step=%d, state=%d, flocking_condition=%d, flocking_counter=%d\n", robot.id, current_step, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter)
+	to_log = string.format("id=%s, step=%d, state=%d, flocking_condition=%d\n", robot.id, current_step, BEHAVIOR_STATE, FLOCKING_CONDITION)
 	add_log(to_log)
 end
 
@@ -134,6 +135,11 @@ function HandleGroupingState()
 	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
 	total_vector[1] = 1.20 * lj_vector[1] - 0.15 * light_vector[1] + 0.08 * obstacle_tangent[1] + 0.20 * leader_vector[1]
 	total_vector[2] = 1.20 * lj_vector[2] - 0.15 * light_vector[2] + 0.08 * obstacle_tangent[2] + 0.20 * leader_vector[2]
+	if(black_ground_count > 0) then
+		BEHAVIOR_STATE = STATE_BLACK_ZONE
+		black_floor_counter = 0
+		return
+	end
 	if(FLOCKING_CONDITION == 1) then
 		flocking_trigger_counter = flocking_trigger_counter + 1
 		if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
