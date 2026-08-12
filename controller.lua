@@ -2,7 +2,7 @@
 
 ---------------------------------------------------------------------------
 -- global variables
-TARGET_DIST = 50 -- the target distance between robots, in cm
+TARGET_DIST = 80 -- the target distance between robots, in cm
 EPSILON = 50 -- a coefficient to increase the force of the repulsion/attraction function
 WHEEL_SPEED = 10 -- max wheel speed
 
@@ -33,11 +33,13 @@ ID = "fb1"
 --Step function
 function step()
 	robot.colored_blob_omnidirectional_camera.enable()
-	robot.range_and_bearing.set_data(1,1) -- first we send something, to make sure the other robots see us
+	robot.range_and_bearing.set_data(1, BEHAVIOR_STATE) -- advertise our current phase to nearby robots
 	lj_vector = ProcessRAB_LJ() -- then we compute the angle to follow, using the other robots as input, see function code for details
+	leader_vector = ProcessRABLeaders() -- pull toward robots that already reached the tunnel or black floor
 	light_vector = ComputeVectorToLight() -- we compute the vector towards the light source
 	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
 	ground_vector, black_ground_count = ProcessGround() -- use the floor sensors to bias motion into the black target area
+	robot.range_and_bearing.set_data(2, black_ground_count > 0 and 1 or 0) -- mark robots that already see black
 	total_vector = {0,0}
 
 	to_log = string.format("light {%.4f, %.4f}\n", light_vector[1], light_vector[2])
@@ -45,8 +47,9 @@ function step()
 
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
 		-- first phase: move toward the light while staying away from nearby obstacles
-		total_vector[1] = light_vector[1] + 0.5 * obstacle_vector[1]
-		total_vector[2] = light_vector[2] + 0.5 * obstacle_vector[2]
+		obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
+		total_vector[1] = light_vector[1] + 0.5 * obstacle_vector[1] + 0.45 * obstacle_tangent[1] + 0.20 * leader_vector[1]
+		total_vector[2] = light_vector[2] + 0.5 * obstacle_vector[2] + 0.45 * obstacle_tangent[2] + 0.20 * leader_vector[2]
 		orientation_counter = orientation_counter + 1
 		if(orientation_counter >= ORIENTATION_STEPS) then
 			BEHAVIOR_STATE = STATE_GROUPING
@@ -54,8 +57,8 @@ function step()
 	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
 		-- second phase: keep the pack together while continuing to use obstacle edges as a guide
 		obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
-		total_vector[1] = lj_vector[1] - 0.20 * light_vector[1] + 0.45 * obstacle_tangent[1]
-		total_vector[2] = lj_vector[2] - 0.20 * light_vector[2] + 0.45 * obstacle_tangent[2]
+		total_vector[1] = lj_vector[1] - 0.20 * light_vector[1] + 0.45 * obstacle_tangent[1] + 0.60 * leader_vector[1]
+		total_vector[2] = lj_vector[2] - 0.20 * light_vector[2] + 0.45 * obstacle_tangent[2] + 0.60 * leader_vector[2]
 		if(FLOCKING_CONDITION == 1) then
 			flocking_trigger_counter = flocking_trigger_counter + 1
 			if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
@@ -66,8 +69,8 @@ function step()
 		end
 	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
 		-- third phase: use obstacle repulsion and floor cues to find a gap instead of pushing through it
-		total_vector[1] = lj_vector[1] - 0.55 * light_vector[1] + 1.30 * obstacle_vector[1] + 0.80 * ground_vector[1]
-		total_vector[2] = lj_vector[2] - 0.55 * light_vector[2] + 1.30 * obstacle_vector[2] + 0.80 * ground_vector[2]
+		total_vector[1] = lj_vector[1] - 0.55 * light_vector[1] + 1.30 * obstacle_vector[1] + 0.80 * ground_vector[1] + 0.40 * leader_vector[1]
+		total_vector[2] = lj_vector[2] - 0.55 * light_vector[2] + 1.30 * obstacle_vector[2] + 0.80 * ground_vector[2] + 0.40 * leader_vector[2]
 		if(black_ground_count > 0) then
 			black_floor_counter = black_floor_counter + 1
 		else
@@ -141,6 +144,25 @@ function ComputeVectorFromProximity()
 		prox_v[2] = prox_v[2] / len
 	end
 	return prox_v
+end
+
+---------------------------------------------------------------------------
+-- This function computes a vector toward robots that have already advanced.
+function ProcessRABLeaders()
+	leader_v = {0,0}
+	for i = 1, #robot.range_and_bearing do
+		if(robot.range_and_bearing[i].data[1] >= STATE_TUNNEL) then
+			weight = 1 / math.max(robot.range_and_bearing[i].range, 1)
+			leader_v[1] = leader_v[1] + math.cos(robot.range_and_bearing[i].horizontal_bearing) * weight
+			leader_v[2] = leader_v[2] + math.sin(robot.range_and_bearing[i].horizontal_bearing) * weight
+		end
+	end
+	len = math.sqrt(leader_v[1] * leader_v[1] + leader_v[2] * leader_v[2])
+	if(len ~= 0) then
+		leader_v[1] = leader_v[1] / len
+		leader_v[2] = leader_v[2] / len
+	end
+	return leader_v
 end
 
 ---------------------------------------------------------------------------
