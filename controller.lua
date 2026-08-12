@@ -8,7 +8,7 @@ WHEEL_SPEED = 10 -- max wheel speed
 
 ACCEPTED_DIST = 10 -- range of accepted distance around the target distance
 NEIGHBORS_AT_TARG_DIST = 4 -- minimum number of neighbors that must be at the right distance for the grouping condition to be verified
-FLOCKING_TRIGGER_THRESHOLD = 50 -- number of consecutive timesteps in which the grouping condition must hold before switching to flocking
+FLOCKING_TRIGGER_THRESHOLD = 80 -- number of consecutive timesteps in which the grouping condition must hold before switching to the black-zone phase
 ORIENTATION_STEPS = 50 -- number of steps to rotate toward the light before moving
 BLACK_FLOOR_STEPS = 10 -- number of consecutive timesteps on black before committing to the target zone
 OBSTACLE_FRONT_THRESHOLD = 0.02 -- proximity threshold for deciding that an obstacle is directly in front
@@ -20,11 +20,11 @@ OBSTACLE_TURN_STEPS = 20 -- number of timesteps to rotate about 90 degrees while
 OBSTACLE_RELEASE_STEPS = 20 -- number of timesteps to back away after releasing the obstacle
 OBSTACLE_COOLDOWN_STEPS = 50 -- number of timesteps to ignore new grab attempts after a release
 FLOCKING_CONDITION = 0
-BEHAVIOR_STATE = 0 -- 0 = orient to light, 1 = grouping, 2 = tunnel, 3 = flocking on black
+BEHAVIOR_STATE = 0 -- 0 = orient to light, 1 = grouping, 2 = tunnel, 3 = black zone
 STATE_ORIENT = 0
 STATE_GROUPING = 1
 STATE_TUNNEL = 2
-STATE_FLOCKING = 3
+STATE_BLACK_ZONE = 3
 orientation_counter = 0
 flocking_trigger_counter = 0
 black_floor_counter = 0
@@ -51,7 +51,7 @@ function step()
 		obstacle_cooldown = obstacle_cooldown - 1
 	end
 	front_obstacle, front_left, front_right = ProcessFrontObstacle()
-	if(BEHAVIOR_STATE == STATE_FLOCKING and obstacle_state == 0 and obstacle_cooldown == 0 and front_obstacle) then
+	if(BEHAVIOR_STATE == STATE_TUNNEL and obstacle_state == 0 and obstacle_cooldown == 0 and front_obstacle) then
 		obstacle_state = 1
 		obstacle_counter = 0
 		obstacle_contact = 0
@@ -83,19 +83,19 @@ function step()
 	add_log(to_log)
 
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
-		-- first phase: move toward the black zone while only lightly avoiding nearby obstacles
+		-- first phase: stay cohesive while drifting away from the light
 		obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
-		total_vector[1] = -light_vector[1] + 0.15 * obstacle_vector[1] + 0.10 * obstacle_tangent[1] + 0.20 * leader_vector[1]
-		total_vector[2] = -light_vector[2] + 0.15 * obstacle_vector[2] + 0.10 * obstacle_tangent[2] + 0.20 * leader_vector[2]
+		total_vector[1] = 0.90 * lj_vector[1] - 0.35 * light_vector[1] + 0.10 * obstacle_vector[1] + 0.05 * obstacle_tangent[1] + 0.10 * leader_vector[1]
+		total_vector[2] = 0.90 * lj_vector[2] - 0.35 * light_vector[2] + 0.10 * obstacle_vector[2] + 0.05 * obstacle_tangent[2] + 0.10 * leader_vector[2]
 		orientation_counter = orientation_counter + 1
 		if(orientation_counter >= ORIENTATION_STEPS) then
 			BEHAVIOR_STATE = STATE_GROUPING
 		end
 	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
-		-- second phase: keep the pack together while biasing the swarm toward the black zone
+		-- second phase: prioritize pack formation before advancing toward the black zone
 		obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
-		total_vector[1] = lj_vector[1] - 0.70 * light_vector[1] + 0.15 * obstacle_tangent[1] + 0.60 * leader_vector[1]
-		total_vector[2] = lj_vector[2] - 0.70 * light_vector[2] + 0.15 * obstacle_tangent[2] + 0.60 * leader_vector[2]
+		total_vector[1] = 1.20 * lj_vector[1] - 0.15 * light_vector[1] + 0.08 * obstacle_tangent[1] + 0.20 * leader_vector[1]
+		total_vector[2] = 1.20 * lj_vector[2] - 0.15 * light_vector[2] + 0.08 * obstacle_tangent[2] + 0.20 * leader_vector[2]
 		if(FLOCKING_CONDITION == 1) then
 			flocking_trigger_counter = flocking_trigger_counter + 1
 			if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
@@ -105,21 +105,23 @@ function step()
 			flocking_trigger_counter = 0
 		end
 	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
-		-- third phase: go to the black zone and only make a small correction for nearby obstacles
-		total_vector[1] = lj_vector[1] - 0.95 * light_vector[1] + 0.20 * obstacle_vector[1] + 0.35 * ground_vector[1] + 0.40 * leader_vector[1]
-		total_vector[2] = lj_vector[2] - 0.95 * light_vector[2] + 0.20 * obstacle_vector[2] + 0.35 * ground_vector[2] + 0.40 * leader_vector[2]
+		TARGET_DIST = 40
+		-- third phase: advance to the black zone, keeping obstacle avoidance as a small correction
+		total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
+		total_vector[2] = lj_vector[2] - 1.05 * light_vector[2] + 0.05 * obstacle_vector[2] + 0.45 * ground_vector[2] + 0.15 * leader_vector[2]
 		if(black_ground_count > 0) then
 			black_floor_counter = black_floor_counter + 1
+			if(black_floor_counter >= BLACK_FLOOR_STEPS) then
+				BEHAVIOR_STATE = STATE_BLACK_ZONE
+			end
 		else
 			black_floor_counter = 0
 		end
-		if(black_floor_counter >= BLACK_FLOOR_STEPS) then
-			BEHAVIOR_STATE = STATE_FLOCKING
-		end
+		
 	else
 		-- final phase: stay on the black floor and keep obstacle interaction minimal
-		total_vector[1] = lj_vector[1] + 1.20 * ground_vector[1] + 0.15 * obstacle_vector[1] - 0.10 * light_vector[1]
-		total_vector[2] = lj_vector[2] + 1.20 * ground_vector[2] + 0.15 * obstacle_vector[2] - 0.10 * light_vector[2]
+		total_vector[1] = 1.10 * ground_vector[1] + 0.03 * obstacle_vector[1]
+		total_vector[2] = 1.10 * ground_vector[2] + 0.03 * obstacle_vector[2]
 		if(black_ground_count == 0) then
 			BEHAVIOR_STATE = STATE_TUNNEL
 			black_floor_counter = 0
@@ -131,9 +133,11 @@ function step()
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
 		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- move slowly while centering between light and obstacles
 	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
-		robot.wheels.set_velocity(0.7 * speeds[1], 0.7 * speeds[2]) -- slow down to stay aligned with the tunnel entrance
+		robot.wheels.set_velocity(0.85 * speeds[1], 0.85 * speeds[2]) -- keep advancing while still staying aligned
+	elseif (BEHAVIOR_STATE == STATE_BLACK_ZONE) then
+		robot.wheels.set_velocity(0.05 * speeds[1], 0.05 *speeds[2]) -- actuate wheels to move
 	else
-		robot.wheels.set_velocity(speeds[1],speeds[2]) -- actuate wheels to move
+		 robot.wheels.set_velocity(speeds[1], speeds[2])
 	end
 	robot.range_and_bearing.clear_data() -- forget about all received messages for next step
     current_step = current_step + 1
