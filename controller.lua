@@ -11,6 +11,14 @@ NEIGHBORS_AT_TARG_DIST = 4 -- minimum number of neighbors that must be at the ri
 FLOCKING_TRIGGER_THRESHOLD = 50 -- number of consecutive timesteps in which the grouping condition must hold before switching to flocking
 ORIENTATION_STEPS = 50 -- number of steps to rotate toward the light before moving
 BLACK_FLOOR_STEPS = 10 -- number of consecutive timesteps on black before committing to the target zone
+OBSTACLE_FRONT_THRESHOLD = 0.02 -- proximity threshold for deciding that an obstacle is directly in front
+OBSTACLE_CONTACT_THRESHOLD = 1.2 -- summed front proximity needed before attempting to lock
+OBSTACLE_APPROACH_STEPS = 8 -- number of timesteps spent pushing into the obstacle before locking
+OBSTACLE_LOCK_STEPS = 8 -- number of timesteps spent closing the gripper before turning
+OBSTACLE_TURN_SPEED = 3 -- wheel speed used while turning with a gripped obstacle
+OBSTACLE_TURN_STEPS = 20 -- number of timesteps to rotate about 90 degrees while holding an obstacle
+OBSTACLE_RELEASE_STEPS = 20 -- number of timesteps to back away after releasing the obstacle
+OBSTACLE_COOLDOWN_STEPS = 50 -- number of timesteps to ignore new grab attempts after a release
 FLOCKING_CONDITION = 0
 BEHAVIOR_STATE = 0 -- 0 = orient to light, 1 = grouping, 2 = tunnel, 3 = flocking on black
 STATE_ORIENT = 0
@@ -20,6 +28,11 @@ STATE_FLOCKING = 3
 orientation_counter = 0
 flocking_trigger_counter = 0
 black_floor_counter = 0
+obstacle_state = 0 -- 0 = none, 1 = approach, 2 = lock, 3 = turn, 4 = release
+obstacle_counter = 0
+obstacle_turn_sign = 1
+obstacle_cooldown = 0
+obstacle_contact = 0
 
 
 LOG_FILE = "tunnel.log"
@@ -34,6 +47,30 @@ ID = "fb1"
 function step()
 	robot.colored_blob_omnidirectional_camera.enable()
 	robot.range_and_bearing.set_data(1, BEHAVIOR_STATE) -- advertise our current phase to nearby robots
+	if(obstacle_cooldown > 0) then
+		obstacle_cooldown = obstacle_cooldown - 1
+	end
+	front_obstacle, front_left, front_right = ProcessFrontObstacle()
+	if(BEHAVIOR_STATE == STATE_FLOCKING and obstacle_state == 0 and obstacle_cooldown == 0 and front_obstacle) then
+		obstacle_state = 1
+		obstacle_counter = 0
+		obstacle_contact = 0
+		if(front_left >= front_right) then
+			obstacle_turn_sign = -1
+		else
+			obstacle_turn_sign = 1
+		end
+	end
+	if(HandleObstacle()) then
+		robot.range_and_bearing.clear_data()
+		current_step = current_step + 1
+		if (current_step%1==0) then
+			to_format = "holding: id=%s, step=%d, state=%d, flocking_condition=%d, flocking_counter=%d\n"
+			log = string.format(to_format, robot.id, current_step, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter)
+			add_log(log)
+		end
+		return
+	end
 	lj_vector = ProcessRAB_LJ() -- then we compute the angle to follow, using the other robots as input, see function code for details
 	leader_vector = ProcessRABLeaders() -- pull toward robots that already reached the tunnel or black floor
 	light_vector = ComputeVectorToLight() -- we compute the vector towards the light source
@@ -46,19 +83,19 @@ function step()
 	add_log(to_log)
 
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
-		-- first phase: move toward the light while staying away from nearby obstacles
+		-- first phase: move toward the black zone while only lightly avoiding nearby obstacles
 		obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
-		total_vector[1] = light_vector[1] + 0.5 * obstacle_vector[1] + 0.45 * obstacle_tangent[1] + 0.20 * leader_vector[1]
-		total_vector[2] = light_vector[2] + 0.5 * obstacle_vector[2] + 0.45 * obstacle_tangent[2] + 0.20 * leader_vector[2]
+		total_vector[1] = -light_vector[1] + 0.15 * obstacle_vector[1] + 0.10 * obstacle_tangent[1] + 0.20 * leader_vector[1]
+		total_vector[2] = -light_vector[2] + 0.15 * obstacle_vector[2] + 0.10 * obstacle_tangent[2] + 0.20 * leader_vector[2]
 		orientation_counter = orientation_counter + 1
 		if(orientation_counter >= ORIENTATION_STEPS) then
 			BEHAVIOR_STATE = STATE_GROUPING
 		end
 	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
-		-- second phase: keep the pack together while continuing to use obstacle edges as a guide
+		-- second phase: keep the pack together while biasing the swarm toward the black zone
 		obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
-		total_vector[1] = lj_vector[1] - 0.20 * light_vector[1] + 0.45 * obstacle_tangent[1] + 0.60 * leader_vector[1]
-		total_vector[2] = lj_vector[2] - 0.20 * light_vector[2] + 0.45 * obstacle_tangent[2] + 0.60 * leader_vector[2]
+		total_vector[1] = lj_vector[1] - 0.70 * light_vector[1] + 0.15 * obstacle_tangent[1] + 0.60 * leader_vector[1]
+		total_vector[2] = lj_vector[2] - 0.70 * light_vector[2] + 0.15 * obstacle_tangent[2] + 0.60 * leader_vector[2]
 		if(FLOCKING_CONDITION == 1) then
 			flocking_trigger_counter = flocking_trigger_counter + 1
 			if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
@@ -68,9 +105,9 @@ function step()
 			flocking_trigger_counter = 0
 		end
 	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
-		-- third phase: use obstacle repulsion and floor cues to find a gap instead of pushing through it
-		total_vector[1] = lj_vector[1] - 0.55 * light_vector[1] + 1.30 * obstacle_vector[1] + 0.80 * ground_vector[1] + 0.40 * leader_vector[1]
-		total_vector[2] = lj_vector[2] - 0.55 * light_vector[2] + 1.30 * obstacle_vector[2] + 0.80 * ground_vector[2] + 0.40 * leader_vector[2]
+		-- third phase: go to the black zone and only make a small correction for nearby obstacles
+		total_vector[1] = lj_vector[1] - 0.95 * light_vector[1] + 0.20 * obstacle_vector[1] + 0.35 * ground_vector[1] + 0.40 * leader_vector[1]
+		total_vector[2] = lj_vector[2] - 0.95 * light_vector[2] + 0.20 * obstacle_vector[2] + 0.35 * ground_vector[2] + 0.40 * leader_vector[2]
 		if(black_ground_count > 0) then
 			black_floor_counter = black_floor_counter + 1
 		else
@@ -80,9 +117,9 @@ function step()
 			BEHAVIOR_STATE = STATE_FLOCKING
 		end
 	else
-		-- final phase: stay compact on the black floor while continuing to avoid obstacles
-		total_vector[1] = lj_vector[1] + 0.90 * ground_vector[1] + 1.10 * obstacle_vector[1] - 0.15 * light_vector[1]
-		total_vector[2] = lj_vector[2] + 0.90 * ground_vector[2] + 1.10 * obstacle_vector[2] - 0.15 * light_vector[2]
+		-- final phase: stay on the black floor and keep obstacle interaction minimal
+		total_vector[1] = lj_vector[1] + 1.20 * ground_vector[1] + 0.15 * obstacle_vector[1] - 0.10 * light_vector[1]
+		total_vector[2] = lj_vector[2] + 1.20 * ground_vector[2] + 0.15 * obstacle_vector[2] - 0.10 * light_vector[2]
 		if(black_ground_count == 0) then
 			BEHAVIOR_STATE = STATE_TUNNEL
 			black_floor_counter = 0
@@ -144,6 +181,92 @@ function ComputeVectorFromProximity()
 		prox_v[2] = prox_v[2] / len
 	end
 	return prox_v
+end
+
+---------------------------------------------------------------------------
+-- This function executes the obstacle-grabbing maneuver and returns true while it is active.
+function HandleObstacle()
+	if(obstacle_state == 0) then
+		-- No grab sequence in progress.
+		return false
+	end
+	if(obstacle_state == 1) then
+		-- Move forward to make contact before attempting to attach.
+		robot.turret.set_position_control_mode()
+		robot.turret.set_rotation(0)
+		robot.wheels.set_velocity(WHEEL_SPEED, WHEEL_SPEED)
+		robot.gripper.unlock()
+		if(front_obstacle) then
+			obstacle_contact = obstacle_contact + front_left + front_right
+		else
+			obstacle_contact = 0
+		end
+		obstacle_counter = obstacle_counter + 1
+		if(obstacle_counter >= OBSTACLE_APPROACH_STEPS and obstacle_contact >= OBSTACLE_CONTACT_THRESHOLD) then
+			-- Enough sustained contact: switch to the locking phase.
+			obstacle_state = 2
+			obstacle_counter = 0
+		end
+	elseif(obstacle_state == 2) then
+		-- Stop and close the gripper while the turret is passive.
+		robot.wheels.set_velocity(0,0)
+		robot.turret.set_position_control_mode()
+		robot.turret.set_rotation(0)
+		robot.gripper.lock_positive()
+		obstacle_counter = obstacle_counter + 1
+		if(obstacle_counter >= OBSTACLE_LOCK_STEPS) then
+			-- Once locked, rotate the robot away from the obstacle.
+			obstacle_state = 3
+			obstacle_counter = 0
+		end
+	elseif(obstacle_state == 3) then
+		-- Turn about 90 degrees while carrying the obstacle.
+		robot.turret.set_passive_mode()
+		robot.wheels.set_velocity(obstacle_turn_sign * -OBSTACLE_TURN_SPEED, obstacle_turn_sign * OBSTACLE_TURN_SPEED)
+		obstacle_counter = obstacle_counter + 1
+		if(obstacle_counter >= OBSTACLE_TURN_STEPS) then
+			-- Finished turning: move to the release phase.
+			obstacle_state = 4
+			obstacle_counter = 0
+		end
+	else
+		-- Back away briefly, then release and cool down before the next grab.
+		robot.turret.set_position_control_mode()
+		robot.turret.set_rotation(0)
+		robot.wheels.set_velocity(-1, -1)
+		robot.gripper.unlock()
+		obstacle_counter = obstacle_counter + 1
+		if(obstacle_counter >= OBSTACLE_RELEASE_STEPS) then
+			obstacle_state = 0
+			obstacle_counter = 0
+			obstacle_cooldown = OBSTACLE_COOLDOWN_STEPS
+			obstacle_contact = 0
+		end
+	end
+	return true
+end
+
+---------------------------------------------------------------------------
+-- This function checks whether a cylinder-like obstacle is directly in front of the robot.
+function ProcessFrontObstacle()
+	front_obstacle = false
+	front_left = 0
+	front_right = 0
+	front_max = 0
+	for i = 1, 24 do
+		if(math.abs(robot.proximity[i].angle) < 2 * math.pi / 3 and robot.proximity[i].value > front_max) then
+			front_max = robot.proximity[i].value
+		end
+		if(robot.proximity[i].angle >= 0 and robot.proximity[i].angle < 2 * math.pi / 3) then
+			front_left = front_left + robot.proximity[i].value
+		elseif(robot.proximity[i].angle < 0 and robot.proximity[i].angle > -2 * math.pi / 3) then
+			front_right = front_right + robot.proximity[i].value
+		end
+	end
+	if(front_max > OBSTACLE_FRONT_THRESHOLD) then
+		front_obstacle = true
+	end
+	return front_obstacle, front_left, front_right
 end
 
 ---------------------------------------------------------------------------
@@ -287,10 +410,18 @@ end
 --nothing to reset
 function reset()
 	robot.colored_blob_omnidirectional_camera.enable()
+	robot.turret.set_position_control_mode()
+	robot.turret.set_rotation(0)
+	robot.gripper.unlock()
 	BEHAVIOR_STATE = STATE_ORIENT
 	orientation_counter = 0
 	flocking_trigger_counter = 0
 	black_floor_counter = 0
+	obstacle_state = 0
+	obstacle_counter = 0
+	obstacle_turn_sign = 1
+	obstacle_cooldown = 0
+	obstacle_contact = 0
     logf = io.open(LOG_FILE, "w")
     if (logf) then
         logf:write("controller started\n")
