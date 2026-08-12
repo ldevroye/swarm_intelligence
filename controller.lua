@@ -45,6 +45,53 @@ ID = "fb1"
 ---------------------------------------------------------------------------
 --Step function
 function step()
+	LogStepStart()
+	if(SetupStep()) then
+		return
+	end
+	lj_vector = ProcessRAB_LJ() -- then we compute the angle to follow, using the other robots as input, see function code for details
+	leader_vector = ProcessRABLeaders() -- pull toward robots that already reached the tunnel or black floor
+	light_vector = ComputeVectorToLight() -- we compute the vector towards the light source
+	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
+	ground_vector, black_ground_count = ProcessGround() -- use the floor sensors to bias motion into the black target area
+	robot.range_and_bearing.set_data(2, black_ground_count > 0 and 1 or 0) -- mark robots that already see black
+	total_vector = {0,0}
+
+	if(BEHAVIOR_STATE == STATE_ORIENT) then
+		HandleOrientState()
+	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
+		HandleGroupingState()
+	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
+		HandleTunnelState()
+	else
+		HandleBlackZoneState()
+	end
+
+	target_angle = math.atan2(total_vector[2],total_vector[1]) -- compute the angle from the vector
+	speeds = ComputeSpeedFromAngle(target_angle) -- we now compute the wheel speed necessary to go in the direction of the target angle
+	if(BEHAVIOR_STATE == STATE_ORIENT) then
+		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- move slowly while centering between light and obstacles
+	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
+		robot.wheels.set_velocity(0.85 * speeds[1], 0.85 * speeds[2]) -- keep advancing while still staying aligned
+	elseif(BEHAVIOR_STATE == STATE_BLACK_ZONE) then
+		robot.wheels.set_velocity(0.05 * speeds[1], 0.05 *speeds[2]) -- actuate wheels to move
+	else
+		robot.wheels.set_velocity(speeds[1], speeds[2])
+	end
+	robot.range_and_bearing.clear_data() -- forget about all received messages for next step
+	current_step = current_step + 1
+end
+
+---------------------------------------------------------------------------
+-- Log the start of each step once, before any setup or state handling.
+function LogStepStart()
+	to_log = string.format("id=%s, step=%d, state=%d, flocking_condition=%d, flocking_counter=%d\n", robot.id, current_step, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter)
+	add_log(to_log)
+end
+
+---------------------------------------------------------------------------
+-- Prepare the step, including obstacle handling if a grab maneuver is active.
+function SetupStep()
 	robot.colored_blob_omnidirectional_camera.enable()
 	robot.range_and_bearing.set_data(1, BEHAVIOR_STATE) -- advertise our current phase to nearby robots
 	if(obstacle_cooldown > 0) then
@@ -64,87 +111,63 @@ function step()
 	if(HandleObstacle()) then
 		robot.range_and_bearing.clear_data()
 		current_step = current_step + 1
-		if (current_step%1==0) then
-			to_format = "holding: id=%s, step=%d, state=%d, flocking_condition=%d, flocking_counter=%d\n"
-			log = string.format(to_format, robot.id, current_step, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter)
-			add_log(log)
-		end
-		return
+		return true
 	end
-	lj_vector = ProcessRAB_LJ() -- then we compute the angle to follow, using the other robots as input, see function code for details
-	leader_vector = ProcessRABLeaders() -- pull toward robots that already reached the tunnel or black floor
-	light_vector = ComputeVectorToLight() -- we compute the vector towards the light source
-	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
-	ground_vector, black_ground_count = ProcessGround() -- use the floor sensors to bias motion into the black target area
-	robot.range_and_bearing.set_data(2, black_ground_count > 0 and 1 or 0) -- mark robots that already see black
-	total_vector = {0,0}
+	return false
+end
 
-	to_log = string.format("light {%.4f, %.4f}\n", light_vector[1], light_vector[2])
-	add_log(to_log)
+---------------------------------------------------------------------------
+-- Handle the orient state.
+function HandleOrientState()
+	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
+	total_vector[1] = 0.90 * lj_vector[1] - 0.35 * light_vector[1] + 0.10 * obstacle_vector[1] + 0.05 * obstacle_tangent[1] + 0.10 * leader_vector[1]
+	total_vector[2] = 0.90 * lj_vector[2] - 0.35 * light_vector[2] + 0.10 * obstacle_vector[2] + 0.05 * obstacle_tangent[2] + 0.10 * leader_vector[2]
+	orientation_counter = orientation_counter + 1
+	if(orientation_counter >= ORIENTATION_STEPS) then
+		BEHAVIOR_STATE = STATE_GROUPING
+	end
+end
 
-	if(BEHAVIOR_STATE == STATE_ORIENT) then
-		-- first phase: stay cohesive while drifting away from the light
-		obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
-		total_vector[1] = 0.90 * lj_vector[1] - 0.35 * light_vector[1] + 0.10 * obstacle_vector[1] + 0.05 * obstacle_tangent[1] + 0.10 * leader_vector[1]
-		total_vector[2] = 0.90 * lj_vector[2] - 0.35 * light_vector[2] + 0.10 * obstacle_vector[2] + 0.05 * obstacle_tangent[2] + 0.10 * leader_vector[2]
-		orientation_counter = orientation_counter + 1
-		if(orientation_counter >= ORIENTATION_STEPS) then
-			BEHAVIOR_STATE = STATE_GROUPING
-		end
-	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
-		-- second phase: prioritize pack formation before advancing toward the black zone
-		obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
-		total_vector[1] = 1.20 * lj_vector[1] - 0.15 * light_vector[1] + 0.08 * obstacle_tangent[1] + 0.20 * leader_vector[1]
-		total_vector[2] = 1.20 * lj_vector[2] - 0.15 * light_vector[2] + 0.08 * obstacle_tangent[2] + 0.20 * leader_vector[2]
-		if(FLOCKING_CONDITION == 1) then
-			flocking_trigger_counter = flocking_trigger_counter + 1
-			if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
-				BEHAVIOR_STATE = STATE_TUNNEL
-			end
-		else
-			flocking_trigger_counter = 0
-		end
-	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
-		TARGET_DIST = 40
-		-- third phase: advance to the black zone, keeping obstacle avoidance as a small correction
-		total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
-		total_vector[2] = lj_vector[2] - 1.05 * light_vector[2] + 0.05 * obstacle_vector[2] + 0.45 * ground_vector[2] + 0.15 * leader_vector[2]
-		if(black_ground_count > 0) then
-			black_floor_counter = black_floor_counter + 1
-			if(black_floor_counter >= BLACK_FLOOR_STEPS) then
-				BEHAVIOR_STATE = STATE_BLACK_ZONE
-			end
-		else
-			black_floor_counter = 0
-		end
-		
-	else
-		-- final phase: stay on the black floor and keep obstacle interaction minimal
-		total_vector[1] = 1.10 * ground_vector[1] + 0.03 * obstacle_vector[1]
-		total_vector[2] = 1.10 * ground_vector[2] + 0.03 * obstacle_vector[2]
-		if(black_ground_count == 0) then
+---------------------------------------------------------------------------
+-- Handle the grouping state.
+function HandleGroupingState()
+	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
+	total_vector[1] = 1.20 * lj_vector[1] - 0.15 * light_vector[1] + 0.08 * obstacle_tangent[1] + 0.20 * leader_vector[1]
+	total_vector[2] = 1.20 * lj_vector[2] - 0.15 * light_vector[2] + 0.08 * obstacle_tangent[2] + 0.20 * leader_vector[2]
+	if(FLOCKING_CONDITION == 1) then
+		flocking_trigger_counter = flocking_trigger_counter + 1
+		if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
 			BEHAVIOR_STATE = STATE_TUNNEL
-			black_floor_counter = 0
 		end
-	end
-
-	target_angle = math.atan2(total_vector[2],total_vector[1]) -- compute the angle from the vector
-	speeds = ComputeSpeedFromAngle(target_angle) -- we now compute the wheel speed necessary to go in the direction of the target angle
-	if(BEHAVIOR_STATE == STATE_ORIENT) then
-		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- move slowly while centering between light and obstacles
-	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
-		robot.wheels.set_velocity(0.85 * speeds[1], 0.85 * speeds[2]) -- keep advancing while still staying aligned
-	elseif (BEHAVIOR_STATE == STATE_BLACK_ZONE) then
-		robot.wheels.set_velocity(0.05 * speeds[1], 0.05 *speeds[2]) -- actuate wheels to move
 	else
-		 robot.wheels.set_velocity(speeds[1], speeds[2])
+		flocking_trigger_counter = 0
 	end
-	robot.range_and_bearing.clear_data() -- forget about all received messages for next step
-    current_step = current_step + 1
-    if (current_step%1==0) then
-		to_format = "id=%s, step=%d, state=%d, flocking_condition=%d, flocking_counter=%d\n"
-		log = string.format(to_format, robot.id, current_step, BEHAVIOR_STATE, FLOCKING_CONDITION, flocking_trigger_counter)
-		add_log(log)
+end
+
+---------------------------------------------------------------------------
+-- Handle the tunnel state.
+function HandleTunnelState()
+	--TODO: this state still relies on the black-floor trigger counter to switch away.
+	total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
+	total_vector[2] = lj_vector[2] - 1.05 * light_vector[2] + 0.05 * obstacle_vector[2] + 0.45 * ground_vector[2] + 0.15 * leader_vector[2]
+	if(black_ground_count > 0) then
+		black_floor_counter = black_floor_counter + 1
+	else
+		black_floor_counter = 0
+	end
+	if(black_floor_counter >= BLACK_FLOOR_STEPS) then
+		BEHAVIOR_STATE = STATE_BLACK_ZONE
+	end
+end
+
+---------------------------------------------------------------------------
+-- Handle the black-zone state.
+function HandleBlackZoneState()
+	total_vector[1] = 1.10 * ground_vector[1] + 0.03 * obstacle_vector[1]
+	total_vector[2] = 1.10 * ground_vector[2] + 0.03 * obstacle_vector[2]
+	if(black_ground_count == 0) then
+		BEHAVIOR_STATE = STATE_TUNNEL
+		black_floor_counter = 0
 	end
 end
 
