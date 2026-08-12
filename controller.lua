@@ -11,16 +11,16 @@ NEIGHBORS_AT_TARG_DIST = 3 -- minimum number of neighbors that must be at the ri
 FLOCKING_TRIGGER_THRESHOLD = 80 -- number of consecutive timesteps in which the grouping condition must hold before switching to the black-zone phase
 ORIENTATION_STEPS = 50 -- number of steps to rotate toward the light before moving
 BLACK_FLOOR_STEPS = 10 -- number of consecutive timesteps on black before committing to the target zone
-OBSTACLE_FRONT_THRESHOLD = 0.02 -- proximity threshold for deciding that an obstacle is directly in front
+OBSTACLE_FRONT_THRESHOLD = 0.08 -- proximity threshold for deciding that an obstacle is directly in front
 OBSTACLE_CONTACT_THRESHOLD = 1.2 -- summed front proximity needed before attempting to lock
 OBSTACLE_CLOSE_THRESHOLD = 0.6 -- individual proximity reading needed to treat an obstacle as very close
-OBSTACLE_APPROACH_STEPS = 8 -- number of timesteps spent pushing into the obstacle before locking
-OBSTACLE_LOCK_STEPS = 8 -- number of timesteps spent closing the gripper before turning
-OBSTACLE_TURN_SPEED = 3 -- wheel speed used while turning with a gripped obstacle
-OBSTACLE_TURN_STEPS = 20 -- number of timesteps to rotate about 90 degrees while holding an obstacle
-OBSTACLE_RELEASE_STEPS = 20 -- number of timesteps to back away after releasing the obstacle
+OBSTACLE_APPROACH_STEPS = 1 -- number of timesteps spent nudging toward the obstacle before locking
+OBSTACLE_LOCK_STEPS = 2 -- number of timesteps spent closing the gripper before turning
+OBSTACLE_TURN_SPEED = 2 -- wheel speed used while turning with a gripped obstacle
+OBSTACLE_TURN_STEPS = 4 -- number of timesteps to rotate about 90 degrees while holding an obstacle
+OBSTACLE_RELEASE_STEPS = 3 -- number of timesteps spent releasing the obstacle before resuming normal motion
 OBSTACLE_COOLDOWN_STEPS = 120 -- number of timesteps to ignore new grab attempts after a release
-OBSTACLE_MAX_STEPS = 60 -- maximum total timesteps allowed for one obstacle sequence
+OBSTACLE_MAX_STEPS = 40 -- maximum total timesteps allowed for one obstacle sequence
 FLOCKING_CONDITION = 0
 BEHAVIOR_STATE = 0 -- 0 = orient to light, 1 = grouping, 2 = tunnel, 3 = black zone
 STATE_ORIENT = 0
@@ -102,8 +102,8 @@ function SetupStep()
 	if(obstacle_cooldown > 0) then
 		obstacle_cooldown = obstacle_cooldown - 1
 	end
-	front_obstacle, front_left, front_right = ProcessFrontObstacle()
-	if(BEHAVIOR_STATE == STATE_TUNNEL and obstacle_state == 0 and obstacle_cooldown == 0 and front_obstacle) then
+	front_obstacle, front_left, front_right, front_centered, front_grabbable = ProcessFrontObstacle()
+	if(BEHAVIOR_STATE == STATE_TUNNEL and obstacle_state == 0 and obstacle_cooldown == 0 and front_obstacle and front_grabbable) then
 		obstacle_state = 1
 		obstacle_counter = 0
 		obstacle_contact = 0
@@ -167,8 +167,8 @@ end
 function HandleTunnelState()
 	TARGET_DIST=60
 	-- total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
-	total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.50 * ground_vector[1] + 0.20 * leader_vector[1] + 0.05 * obstacle_vector[1]
-	total_vector[2] = lj_vector[2] - 1.05 * light_vector[2] + 0.50 * ground_vector[2] + 0.20 * leader_vector[2] + 0.05 * obstacle_vector[2]
+	total_vector[1] = 0.8 * lj_vector[1] - 1.05 * light_vector[1] + 0.50 * ground_vector[1] + 0.20 * leader_vector[1] + 0.05 * obstacle_vector[1]
+	total_vector[2] = 0.8 * lj_vector[2] - 1.05 * light_vector[2] + 0.50 * ground_vector[2] + 0.20 * leader_vector[2] + 0.05 * obstacle_vector[2]
 	
 	if(obstacle_state == 0) then
 		-- Add a sideways correction without losing the main target drive.
@@ -241,12 +241,17 @@ end
 function ComputeCloseObstacleVectorTangent()
 	close_prox_v = {0,0}
 	tangent_v = {0,0}
+	close_count = 0
 
 	for i = 1, 24 do
 		if(robot.proximity[i].value >= OBSTACLE_CLOSE_THRESHOLD) then
+			close_count = close_count + 1
 			close_prox_v[1] = close_prox_v[1] - robot.proximity[i].value * math.cos(robot.proximity[i].angle)
 			close_prox_v[2] = close_prox_v[2] - robot.proximity[i].value * math.sin(robot.proximity[i].angle)
 		end
+	end
+	if(close_count < 2) then
+		return tangent_v
 	end
 	len = math.sqrt(close_prox_v[1] * close_prox_v[1] + close_prox_v[2] * close_prox_v[2])
 	if(len ~= 0) then
@@ -269,10 +274,10 @@ function HandleObstacle()
 		return false
 	end
 	if(obstacle_state == 1) then
-		-- Move forward to make contact before attempting to attach.
+		-- Briefly nudge forward, then stop and lock as soon as the obstacle is close enough.
 		robot.turret.set_position_control_mode()
 		robot.turret.set_rotation(0)
-		robot.wheels.set_velocity(WHEEL_SPEED, WHEEL_SPEED)
+		robot.wheels.set_velocity(0.6 * WHEEL_SPEED, 0.6 * WHEEL_SPEED)
 		robot.gripper.unlock()
 		if(front_obstacle) then
 			obstacle_contact = obstacle_contact + front_left + front_right
@@ -281,7 +286,8 @@ function HandleObstacle()
 		end
 		obstacle_counter = obstacle_counter + 1
 		obstacle_elapsed = obstacle_elapsed + 1
-		if(obstacle_counter >= OBSTACLE_APPROACH_STEPS and obstacle_contact >= OBSTACLE_CONTACT_THRESHOLD) then
+		if((obstacle_counter >= OBSTACLE_APPROACH_STEPS and obstacle_contact >= OBSTACLE_CONTACT_THRESHOLD) or 
+		  (close_count >= 2 and front_obstacle)) then
 			-- Enough sustained contact: switch to the locking phase.
 			obstacle_state = 2
 			obstacle_counter = 0
@@ -300,7 +306,7 @@ function HandleObstacle()
 			obstacle_counter = 0
 		end
 	elseif(obstacle_state == 3) then
-		-- Turn about 90 degrees while carrying the obstacle.
+		-- Turn briefly while carrying the obstacle.
 		robot.turret.set_passive_mode()
 		robot.wheels.set_velocity(obstacle_turn_sign * -OBSTACLE_TURN_SPEED, obstacle_turn_sign * OBSTACLE_TURN_SPEED)
 		obstacle_counter = obstacle_counter + 1
@@ -311,10 +317,10 @@ function HandleObstacle()
 			obstacle_counter = 0
 		end
 	else
-		-- Back away briefly, then release and cool down before the next grab.
+		-- Stop, release, and cool down before the next grab.
 		robot.turret.set_position_control_mode()
 		robot.turret.set_rotation(0)
-		robot.wheels.set_velocity(-1, -1)
+		robot.wheels.set_velocity(0, 0)
 		robot.gripper.unlock()
 		obstacle_counter = obstacle_counter + 1
 		obstacle_elapsed = obstacle_elapsed + 1
@@ -344,23 +350,42 @@ end
 -- This function checks whether a cylinder-like obstacle is directly in front of the robot.
 function ProcessFrontObstacle()
 	front_obstacle = false
+	front_centered = false
+	front_grabbable = false
 	front_left = 0
 	front_right = 0
 	front_max = 0
+	front_close_count = 0
 	for i = 1, 24 do
 		if(math.abs(robot.proximity[i].angle) < 2 * math.pi / 3 and robot.proximity[i].value > front_max) then
 			front_max = robot.proximity[i].value
 		end
 		if(robot.proximity[i].angle >= 0 and robot.proximity[i].angle < 2 * math.pi / 3) then
 			front_left = front_left + robot.proximity[i].value
+			if(robot.proximity[i].value >= OBSTACLE_CLOSE_THRESHOLD) then
+				front_close_count = front_close_count + 1
+			end
 		elseif(robot.proximity[i].angle < 0 and robot.proximity[i].angle > -2 * math.pi / 3) then
 			front_right = front_right + robot.proximity[i].value
+			if(robot.proximity[i].value >= OBSTACLE_CLOSE_THRESHOLD) then
+				front_close_count = front_close_count + 1
+			end
 		end
 	end
 	if(front_max > OBSTACLE_FRONT_THRESHOLD) then
 		front_obstacle = true
 	end
-	return front_obstacle, front_left, front_right
+	front_sum = front_left + front_right
+	if(front_obstacle and front_sum > 0) then
+		front_balance = math.abs(front_left - front_right) / front_sum
+		if(front_balance < 0.35 and front_sum >= OBSTACLE_CONTACT_THRESHOLD) then
+			front_centered = true
+		end
+	end
+	if(front_centered and front_close_count <= 5) then
+		front_grabbable = true
+	end
+	return front_obstacle, front_left, front_right, front_centered, front_grabbable
 end
 
 ---------------------------------------------------------------------------
@@ -469,6 +494,10 @@ function ProcessRAB_LJ()
 				FLOCKING_CONDITION = 1
 			end
 		end		
+	end
+	if(neighbors_in_range_counter < NEIGHBORS_AT_TARG_DIST) then
+		sum_vector[1] = 0.7 * sum_vector[1]
+		sum_vector[2] = 0.7 * sum_vector[2]
 	end
 
 	to_log = string.format("#neighbors=%d\n", neighbors_in_range_counter)
