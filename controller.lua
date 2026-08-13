@@ -58,6 +58,7 @@ function step()
 	light_vector = ComputeVectorToLight() -- we compute the vector towards the light source
 	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
 	close_obstacle_tangent = ComputeCloseObstacleVectorTangent()
+	leader_vector = {0,0}
 	total_vector = {0,0}
 
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
@@ -81,34 +82,40 @@ function step()
 		robot.wheels.set_velocity(speeds[1], speeds[2])
 	end
 	robot.range_and_bearing.clear_data() -- forget about all received messages for next step
-	current_step = current_step + 1
 end
 
 ---------------------------------------------------------------------------
 -- Log the start of each step once, before any setup or state handling.
 function LogStepStart()
-	to_log = string.format("step=%d, state=%d, flocking_condition=%d\n", current_step, BEHAVIOR_STATE, FLOCKING_CONDITION)
+	to_log = string.format("step=%d, state=%d, flocking_condition=%d", current_step, BEHAVIOR_STATE, FLOCKING_CONDITION)
 	add_log(to_log)
 end
 
 ---------------------------------------------------------------------------
 -- Prepare the step, including obstacle handling if a grab maneuver is active.
 function SetupStep()
+	current_step = current_step + 1
 	robot.colored_blob_omnidirectional_camera.enable()
 	ground_vector, black_ground_count = ProcessGround() -- use the floor sensors to bias motion into the black target area
-	robot.leds.set_all_colors(black_ground_count > 0 and "red" or "blue")
+	robot.leds.set_all_colors("blue")
+	if(BEHAVIOR_STATE == STATE_BLACK_ZONE) then
+		robot.leds.set_single_color(13, "green")
+	end
 	robot.range_and_bearing.set_data(1, BEHAVIOR_STATE) -- advertise our current phase to nearby robots
-	robot.range_and_bearing.set_data(2, black_ground_count > 0 and 1 or 0) -- explicitly mark robots that are in the black zone
-	leader_vector, black_leader_seen = ProcessRABLeaders() -- pull directly toward the first robot seen in the black zone
+	robot.range_and_bearing.set_data(2, BEHAVIOR_STATE == STATE_BLACK_ZONE and 1 or 0) -- explicitly mark robots that are in the black zone
 	beacon_vector, beacon_seen = ProcessBlackZoneBeacon()
+	if(beacon_seen > 0) then
+		add_log("beacon robot seen")
+	end
 	if(black_ground_count == 0 and beacon_seen > 0) then
+		add_log("going towards it")
 		total_vector = beacon_vector
 		target_angle = math.atan2(total_vector[2], total_vector[1])
 		speeds = ComputeSpeedFromAngle(target_angle)
 		robot.wheels.set_velocity(speeds[1], speeds[2])
 		robot.range_and_bearing.clear_data()
-		current_step = current_step + 1
-		return
+		
+		return true
 	end
 
 	if(obstacle_cooldown > 0) then
@@ -128,7 +135,6 @@ function SetupStep()
 	end
 	if(HandleObstacle()) then
 		robot.range_and_bearing.clear_data()
-		current_step = current_step + 1
 		return true
 	end
 	return false
@@ -138,8 +144,8 @@ end
 -- Handle the orient state.
 function HandleOrientState()
 	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
-	total_vector[1] = 0.90 * lj_vector[1] + 0.35 * light_vector[1] + 0.10 * obstacle_vector[1] + 0.05 * obstacle_tangent[1] + 0.10 * leader_vector[1]
-	total_vector[2] = 0.90 * lj_vector[2] + 0.35 * light_vector[2] + 0.10 * obstacle_vector[2] + 0.05 * obstacle_tangent[2] + 0.10 * leader_vector[2]
+	total_vector[1] = 0.90 * lj_vector[1] + 0.35 * light_vector[1] + 0.10 * obstacle_vector[1] + 0.05 * obstacle_tangent[1]
+	total_vector[2] = 0.90 * lj_vector[2] + 0.35 * light_vector[2] + 0.10 * obstacle_vector[2] + 0.05 * obstacle_tangent[2]
 	orientation_counter = orientation_counter + 1
 	if(orientation_counter >= ORIENTATION_STEPS) then
 		BEHAVIOR_STATE = STATE_GROUPING
@@ -149,6 +155,7 @@ end
 ---------------------------------------------------------------------------
 -- Handle the grouping state.
 function HandleGroupingState()
+	leader_vector = ProcessRABLeaders() -- grouping robots can pull toward the local swarm structure
 	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
 	total_vector[1] = 1.20 * lj_vector[1] - 0.3 * light_vector[1] + 0.08 * obstacle_tangent[1] + 0.10 * leader_vector[1]
 	total_vector[2] = 1.20 * lj_vector[2] - 0.3 * light_vector[2] + 0.08 * obstacle_tangent[2] + 0.10 * leader_vector[2]
@@ -179,8 +186,8 @@ end
 function HandleTunnelState()
 	TARGET_DIST=60
 	-- total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
-	total_vector[1] = 0.8 * lj_vector[1] - 1.05 * light_vector[1] + 0.50 * ground_vector[1] + 0.10 * leader_vector[1] + 0.05 * obstacle_vector[1]
-	total_vector[2] = 0.8 * lj_vector[2] - 1.05 * light_vector[2] + 0.50 * ground_vector[2] + 0.10 * leader_vector[2] + 0.05 * obstacle_vector[2]
+	total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.50 * ground_vector[1] + 0.05 * obstacle_vector[1]
+	total_vector[2] = lj_vector[2] - 1.05 * light_vector[2] + 0.50 * ground_vector[2] + 0.05 * obstacle_vector[2]
 	
 	if(obstacle_state == 0) then
 		-- Add a sideways correction without losing the main target drive.
@@ -412,11 +419,6 @@ function ProcessRABLeaders()
 	leader_v = {0,0}
 	for i = 1, #robot.range_and_bearing do
 		if(robot.range_and_bearing[i].data[1] >= STATE_TUNNEL) then
-			if(robot.range_and_bearing[i].data[2] == 1) then
-				leader_v[1] = math.cos(robot.range_and_bearing[i].horizontal_bearing)
-				leader_v[2] = math.sin(robot.range_and_bearing[i].horizontal_bearing)
-				return leader_v, 1
-			end
 			leader_v[1] = leader_v[1] + math.cos(robot.range_and_bearing[i].horizontal_bearing)
 			leader_v[2] = leader_v[2] + math.sin(robot.range_and_bearing[i].horizontal_bearing)
 		end
@@ -426,7 +428,7 @@ function ProcessRABLeaders()
 		leader_v[1] = leader_v[1] / len
 		leader_v[2] = leader_v[2] / len
 	end
-	return leader_v, 0
+	return leader_v
 end
 
 --------------------------------------------------------------------------
@@ -435,7 +437,7 @@ function ProcessBlackZoneBeacon()
 	beacon_v = {0,0}
 	for i = 1, #robot.colored_blob_omnidirectional_camera do
 		blob = robot.colored_blob_omnidirectional_camera[i]
-		if(blob.color.red > 200 and blob.color.green < 80 and blob.color.blue < 80) then
+		if(blob.color.green > 200 and blob.color.red < 80 and blob.color.blue < 80) then
 			beacon_v[1] = math.cos(blob.angle)
 			beacon_v[2] = math.sin(blob.angle)
 			return beacon_v, 1
@@ -546,7 +548,7 @@ function ProcessRAB_LJ()
 		sum_vector[2] = 0.7 * sum_vector[2]
 	end
 
-	to_log = string.format("#neighbors=%d\n", neighbors_in_range_counter)
+	to_log = string.format("#neighbors=%d", neighbors_in_range_counter)
 	add_log(to_log)
 	
 	return sum_vector
@@ -615,7 +617,7 @@ end
 function add_log(log)
 	logf = io.open(LOG_FILE, "a")
 	if (robot.id==ID and logf) then
-		logf:write(log)
+		logf:write(log.."\n")
 		logf:flush()
 	end
 end
