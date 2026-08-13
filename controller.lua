@@ -6,7 +6,7 @@ TARGET_DIST = 80 -- the target distance between robots, in cm
 EPSILON = 50 -- a coefficient to increase the force of the repulsion/attraction function
 WHEEL_SPEED = 6 -- max wheel speed
 
-ACCEPTED_DIST = 10 -- range of accepted distance around the target distance
+ACCEPTED_DIST = 20 -- range of accepted distance around the target distance
 NEIGHBORS_AT_TARG_DIST = 3 -- minimum number of neighbors that must be at the right distance for the grouping condition to be verified
 FLOCKING_TRIGGER_THRESHOLD = 40 -- number of consecutive timesteps in which the grouping condition must hold before switching to the black-zone phase
 ORIENTATION_STEPS = 100 -- number of steps to rotate toward the light before moving
@@ -64,9 +64,9 @@ function step()
 	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
 	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
 	leader_vector = ProcessRABLeaders() -- grouping robots can pull toward the local swarm structure
+	neighborhood_repulsion_vector = ProcessRABNeighborhoodRepulsion() -- black-zone robots should also spread apart locally
 	close_obstacle_tangent, close_obstacle_count = ComputeCloseObstacleVectorTangent()
 
-	leader_vector = {0,0}
 	total_vector = {0,0}
 
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
@@ -136,7 +136,7 @@ function SetupStep()
 			total_vector[1] = total_vector[1] + 0.2 * beacon_tangent[1]
 			total_vector[2] = total_vector[2] + 0.2 * beacon_tangent[2]
 		end
-		speeds = ComputeMoveTowardTargetSpeeds(total_vector)
+		speeds = ComputeMoveTowardBeaconSpeeds(total_vector)
 		robot.wheels.set_velocity(speeds[1], speeds[2])
 		robot.range_and_bearing.clear_data()
 		
@@ -185,10 +185,9 @@ end
 ---------------------------------------------------------------------------
 -- Handle the grouping state.
 function HandleGroupingState()
-	leader_vector = ProcessRABLeaders() -- grouping robots can pull toward the local swarm structure
-	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
-	total_vector[1] = 1.20 * lj_vector[1] - 0.3 * light_vector[1] + 0.08 * obstacle_tangent[1] + 0.10 * leader_vector[1]
-	total_vector[2] = 1.20 * lj_vector[2] - 0.3 * light_vector[2] + 0.08 * obstacle_tangent[2] + 0.10 * leader_vector[2]
+	
+	total_vector[1] = 1.20 * lj_vector[1] - light_vector[1] + 0.08 * obstacle_tangent[1] + 0.20 * leader_vector[1]
+	total_vector[2] = 1.20 * lj_vector[2] - light_vector[2] + 0.08 * obstacle_tangent[2] + 0.20 * leader_vector[2]
 
 	if(obstacle_state == 0 and close_obstacle_count >= 3) then
 		-- Add a sideways correction without losing the main target drive.
@@ -217,13 +216,13 @@ end
 function HandleTunnelState()
 	TARGET_DIST=60
 	-- total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
-	total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 1.50 * ground_vector[1] + 0.1 * obstacle_vector[1]
-	total_vector[2] = lj_vector[2] - 1.05 * light_vector[2] + 1.50 * ground_vector[2] + 0.1 * obstacle_vector[2]
+	total_vector[1] = lj_vector[1] - 1.5 * light_vector[1] + 5 * ground_vector[1] + 0.10 * obstacle_vector[1] + 0.05 * leader_vector[1]
+	total_vector[2] = lj_vector[2] - 1.5 * light_vector[2] + 5 * ground_vector[2] + 0.10 * obstacle_vector[2] + 0.05 * leader_vector[2]
 	
 	if(obstacle_state == 0 and close_obstacle_count >= 3) then
 		-- Add a sideways correction without losing the main target drive.
-		total_vector[1] = total_vector[1] + 0.2 * close_obstacle_tangent[1]
-		total_vector[2] = total_vector[2] + 0.2 * close_obstacle_tangent[2]
+		total_vector[1] = total_vector[1] + 0.3 * close_obstacle_tangent[1]
+		total_vector[2] = total_vector[2] + 0.3 * close_obstacle_tangent[2]
 	end
 
 	if(black_ground_count > 0) then
@@ -247,13 +246,12 @@ function HandleBlackZoneState()
 		end
 		black_walk_counter = black_walk_counter - 1
 		if(black_ground_count > 0) then
-			total_vector[1] = 3.00 * ground_vector[1] + 0.45 * math.cos(black_walk_angle) + 0.25 * obstacle_tangent[1]
-			total_vector[2] = 3.00 * ground_vector[2] + 0.45 * math.sin(black_walk_angle) + 0.25 * obstacle_tangent[2]
+			total_vector[1] = 3.00 * ground_vector[1] + 0.45 * math.cos(black_walk_angle) + 0.25 * obstacle_tangent[1] + 0.1 * neighborhood_repulsion_vector[1]
+			total_vector[2] = 3.00 * ground_vector[2] + 0.45 * math.sin(black_walk_angle) + 0.25 * obstacle_tangent[2] + 0.1 * neighborhood_repulsion_vector[2]
 		else
-			-- If we are leaving black, reuse the last heading in reverse to get back in.
 			return_angle = black_walk_angle + math.pi
-			total_vector[1] = 1.60 * math.cos(return_angle) + 0.35 * obstacle_tangent[1]
-			total_vector[2] = 1.60 * math.sin(return_angle) + 0.35 * obstacle_tangent[2]
+			total_vector[1] = 1.60 * math.cos(return_angle) + 0.35 * obstacle_tangent[1] + 0.1 * neighborhood_repulsion_vector[1]
+			total_vector[2] = 1.60 * math.sin(return_angle) + 0.35 * obstacle_tangent[2] + 0.1 * neighborhood_repulsion_vector[2]
 		end
 	else
 		total_vector[1] = 1.45 * light_vector[1]
@@ -268,6 +266,9 @@ function HandleBlackZoneState()
 			black_floor_counter = 0
 		end
 	end
+
+	total_vector[1] = total_vector[1] + 5.00 * ground_vector[1]
+	total_vector[2] = total_vector[2] + 5.00 * ground_vector[2]
 end
 
 ---------------------------------------------------------------------------
@@ -545,6 +546,27 @@ function ProcessRABLeaders()
 	return leader_v
 end
 
+---------------------------------------------------------------------------
+-- This function computes a weighted repulsion vector from nearby robots so
+-- the black-zone random walk also spreads the swarm apart.
+function ProcessRABNeighborhoodRepulsion()
+	neighborhood_v = {0,0}
+	for i = 1, #robot.range_and_bearing do
+		weight = 1.0
+		if(robot.range_and_bearing[i].range ~= nil and robot.range_and_bearing[i].range > 0.01) then
+			weight = 1.0 / robot.range_and_bearing[i].range
+		end
+		neighborhood_v[1] = neighborhood_v[1] - weight * math.cos(robot.range_and_bearing[i].horizontal_bearing)
+		neighborhood_v[2] = neighborhood_v[2] - weight * math.sin(robot.range_and_bearing[i].horizontal_bearing)
+	end
+	len = math.sqrt(neighborhood_v[1] * neighborhood_v[1] + neighborhood_v[2] * neighborhood_v[2])
+	if(len ~= 0) then
+		neighborhood_v[1] = neighborhood_v[1] / len
+		neighborhood_v[2] = neighborhood_v[2] / len
+	end
+	return neighborhood_v
+end
+
 --------------------------------------------------------------------------
 -- This function computes a direct vector toward the first black-zone beacon seen by the camera.
 function ProcessBlackZoneBeacon()
@@ -682,6 +704,33 @@ function ComputeMoveTowardTargetSpeeds(target_vector)
 	end
 	if(right_speed < 0.20 * WHEEL_SPEED) then
 		right_speed = 0.20 * WHEEL_SPEED
+	elseif(right_speed > WHEEL_SPEED) then
+		right_speed = WHEEL_SPEED
+	end
+	return {left_speed, right_speed}
+end
+
+---------------------------------------------------------------------------
+-- This function computes a stronger forward-biased motion for beacon joins.
+function ComputeMoveTowardBeaconSpeeds(target_vector)
+	target_angle = math.atan2(target_vector[2], target_vector[1])
+	forward_speed = 0.90 * WHEEL_SPEED
+	steer = target_angle
+	if(steer > 0.85) then
+		steer = 0.85
+	elseif(steer < -0.85) then
+		steer = -0.85
+	end
+	turn_speed = 0.28 * WHEEL_SPEED
+	left_speed = forward_speed - turn_speed * steer
+	right_speed = forward_speed + turn_speed * steer
+	if(left_speed < 0.35 * WHEEL_SPEED) then
+		left_speed = 0.35 * WHEEL_SPEED
+	elseif(left_speed > WHEEL_SPEED) then
+		left_speed = WHEEL_SPEED
+	end
+	if(right_speed < 0.35 * WHEEL_SPEED) then
+		right_speed = 0.35 * WHEEL_SPEED
 	elseif(right_speed > WHEEL_SPEED) then
 		right_speed = WHEEL_SPEED
 	end
