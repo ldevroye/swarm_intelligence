@@ -4,12 +4,12 @@
 -- global variables
 TARGET_DIST = 80 -- the target distance between robots, in cm
 EPSILON = 50 -- a coefficient to increase the force of the repulsion/attraction function
-WHEEL_SPEED = 10 -- max wheel speed
+WHEEL_SPEED = 6 -- max wheel speed
 
 ACCEPTED_DIST = 10 -- range of accepted distance around the target distance
 NEIGHBORS_AT_TARG_DIST = 3 -- minimum number of neighbors that must be at the right distance for the grouping condition to be verified
 FLOCKING_TRIGGER_THRESHOLD = 40 -- number of consecutive timesteps in which the grouping condition must hold before switching to the black-zone phase
-ORIENTATION_STEPS = 50 -- number of steps to rotate toward the light before moving
+ORIENTATION_STEPS = 100 -- number of steps to rotate toward the light before moving
 BLACK_FLOOR_STEPS = 10 -- number of consecutive timesteps on black before committing to the target zone
 OBSTACLE_FRONT_THRESHOLD = 0.08 -- proximity threshold for deciding that an obstacle is directly in front
 OBSTACLE_CONTACT_THRESHOLD = 1.2 -- summed front proximity needed before attempting to lock
@@ -21,6 +21,7 @@ OBSTACLE_TURN_STEPS = 4 -- number of timesteps to rotate about 90 degrees while 
 OBSTACLE_RELEASE_STEPS = 3 -- number of timesteps spent releasing the obstacle before resuming normal motion
 OBSTACLE_COOLDOWN_STEPS = 120 -- number of timesteps to ignore new grab attempts after a release
 OBSTACLE_MAX_STEPS = 40 -- maximum total timesteps allowed for one obstacle sequence
+BLACK_RANDOM_WALK_STEPS = 75 -- number of timesteps to keep one random heading in the black zone
 FLOCKING_CONDITION = 0
 BEHAVIOR_STATE = 0 -- 0 = orient to light, 1 = grouping, 2 = tunnel, 3 = black zone
 STATE_ORIENT = 0
@@ -36,6 +37,8 @@ obstacle_turn_sign = 1
 obstacle_cooldown = 0
 obstacle_contact = 0
 obstacle_elapsed = 0
+black_walk_counter = 0
+black_walk_angle = 0
 
 
 ID = robot.id
@@ -57,7 +60,10 @@ function step()
 	lj_vector = ProcessRAB_LJ() -- then we compute the angle to follow, using the other robots as input, see function code for details
 	light_vector = ComputeVectorToLight() -- we compute the vector towards the light source
 	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
+	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
+	leader_vector = ProcessRABLeaders() -- grouping robots can pull toward the local swarm structure
 	close_obstacle_tangent, close_obstacle_count = ComputeCloseObstacleVectorTangent()
+
 	leader_vector = {0,0}
 	total_vector = {0,0}
 
@@ -70,14 +76,20 @@ function step()
 	else
 		HandleBlackZoneState()
 	end
-	target_angle = math.atan2(total_vector[2],total_vector[1]) -- compute the angle from the vector
-	speeds = ComputeSpeedFromAngle(target_angle) -- we now compute the wheel speed necessary to go in the direction of the target angle
+	if(BEHAVIOR_STATE == STATE_TUNNEL or BEHAVIOR_STATE == STATE_BLACK_ZONE) then
+		speeds = ComputeMoveTowardTargetSpeeds(total_vector)
+	else
+		target_angle = math.atan2(total_vector[2],total_vector[1]) -- compute the angle from the vector
+		speeds = ComputeSpeedFromAngle(target_angle) -- we now compute the wheel speed necessary to go in the direction of the target angle
+	end
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
 		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- move slowly while centering between light and obstacles
 	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
 		robot.wheels.set_velocity(0.85 * speeds[1], 0.85 * speeds[2]) -- keep advancing while still staying aligned
+	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
+		robot.wheels.set_velocity(0.95 * speeds[1], 0.95 * speeds[2]) -- move faster through the tunnel while keeping forward bias
 	elseif(BEHAVIOR_STATE == STATE_BLACK_ZONE) then
-		robot.wheels.set_velocity(0.4 * speeds[1], 0.4 *speeds[2]) -- actuate wheels to move
+		robot.wheels.set_velocity(0.85 * speeds[1], 0.85 *speeds[2]) -- keep moving with enough authority to stay in the zone
 	else
 		robot.wheels.set_velocity(speeds[1], speeds[2])
 	end
@@ -109,18 +121,27 @@ function SetupStep()
 	end
 	if(black_ground_count == 0 and beacon_seen > 0) then
 		add_log("going towards it")
+		if(obstacle_state ~= 0) then
+			robot.turret.set_position_control_mode()
+			robot.turret.set_rotation(0)
+			robot.gripper.unlock()
+			obstacle_state = 0
+			obstacle_counter = 0
+			obstacle_contact = 0
+			obstacle_elapsed = 0
+			obstacle_cooldown = OBSTACLE_COOLDOWN_STEPS
+		end
 		front_obstacle, front_left, front_right, front_centered, front_grabbable = ProcessFrontObstacle()
 		total_vector = {beacon_vector[1], beacon_vector[2]}
 		beacon_avoid_vector = ComputeVectorFromProximity()
-		total_vector[1] = total_vector[1] + 0.14 * beacon_avoid_vector[1]
-		total_vector[2] = total_vector[2] + 0.14 * beacon_avoid_vector[2]
-		if(front_obstacle) then
+		total_vector[1] = total_vector[1] + 0.75 * beacon_avoid_vector[1]
+		total_vector[2] = total_vector[2] + 0.75 * beacon_avoid_vector[2]
+		if(front_obstacle or close_obstacle_count > 0) then
 			beacon_tangent = ComputeCloseObstacleVectorTangent()
-			total_vector[1] = total_vector[1] + 0.28 * beacon_tangent[1]
-			total_vector[2] = total_vector[2] + 0.28 * beacon_tangent[2]
+			total_vector[1] = total_vector[1] + 0.95 * beacon_tangent[1]
+			total_vector[2] = total_vector[2] + 0.95 * beacon_tangent[2]
 		end
-		target_angle = math.atan2(total_vector[2], total_vector[1])
-		speeds = ComputeSpeedFromAngle(target_angle)
+		speeds = ComputeMoveTowardTargetSpeeds(total_vector)
 		robot.wheels.set_velocity(speeds[1], speeds[2])
 		robot.range_and_bearing.clear_data()
 		
@@ -131,7 +152,7 @@ function SetupStep()
 		obstacle_cooldown = obstacle_cooldown - 1
 	end
 	front_obstacle, front_left, front_right, front_centered, front_grabbable = ProcessFrontObstacle()
-	if(BEHAVIOR_STATE == STATE_TUNNEL and obstacle_state == 0 and obstacle_cooldown == 0 and front_obstacle and front_grabbable) then
+	if((BEHAVIOR_STATE == STATE_TUNNEL or BEHAVIOR_STATE == STATE_BLACK_ZONE) and obstacle_state == 0 and obstacle_cooldown == 0 and front_obstacle and front_grabbable) then
 		obstacle_state = 1
 		obstacle_counter = 0
 		obstacle_contact = 0
@@ -154,7 +175,6 @@ end
 ---------------------------------------------------------------------------
 -- Handle the orient state.
 function HandleOrientState()
-	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
 	total_vector[1] = 0.90 * lj_vector[1] + 0.35 * light_vector[1] + 0.10 * obstacle_vector[1] + 0.05 * obstacle_tangent[1]
 	total_vector[2] = 0.90 * lj_vector[2] + 0.35 * light_vector[2] + 0.10 * obstacle_vector[2] + 0.05 * obstacle_tangent[2]
 	orientation_counter = orientation_counter + 1
@@ -180,6 +200,7 @@ function HandleGroupingState()
 	if(black_ground_count > 0) then
 		BEHAVIOR_STATE = STATE_BLACK_ZONE
 		black_floor_counter = 0
+		black_walk_counter = 0
 		return
 	end
 	if(FLOCKING_CONDITION == 1) then
@@ -197,8 +218,8 @@ end
 function HandleTunnelState()
 	TARGET_DIST=60
 	-- total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
-	total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.50 * ground_vector[1] + 0.05 * obstacle_vector[1]
-	total_vector[2] = lj_vector[2] - 1.05 * light_vector[2] + 0.50 * ground_vector[2] + 0.05 * obstacle_vector[2]
+	total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 1.50 * ground_vector[1] + 0.1 * obstacle_vector[1]
+	total_vector[2] = lj_vector[2] - 1.05 * light_vector[2] + 1.50 * ground_vector[2] + 0.1 * obstacle_vector[2]
 	
 	if(obstacle_state == 0 and close_obstacle_count >= 3) then
 		-- Add a sideways correction without losing the main target drive.
@@ -213,15 +234,30 @@ function HandleTunnelState()
 	end
 	if(black_floor_counter >= BLACK_FLOOR_STEPS) then
 		BEHAVIOR_STATE = STATE_BLACK_ZONE
+		black_walk_counter = 0
 	end
 end
 
 ---------------------------------------------------------------------------
 -- Handle the black-zone state.
 function HandleBlackZoneState()
-	black_tangent = {ground_vector[2], -ground_vector[1]}
-	total_vector[1] = 0.35 * ground_vector[1] + 0.95 * black_tangent[1]
-	total_vector[2] = 0.35 * ground_vector[2] + 0.95 * black_tangent[2]
+	if(obstacle_state == 0) then
+		if(black_walk_counter <= 0) then
+			black_walk_counter = BLACK_RANDOM_WALK_STEPS
+			black_walk_angle = robot.random.uniform(-math.pi, math.pi)
+		end
+		black_walk_counter = black_walk_counter - 1
+		if(black_ground_count > 0) then
+			total_vector[1] = 2.50 * ground_vector[1] + 0.35 * math.cos(black_walk_angle) + 0.20 * obstacle_tangent[1]
+			total_vector[2] = 2.50 * ground_vector[2] + 0.35 * math.sin(black_walk_angle) + 0.20 * obstacle_tangent[2]
+		else
+			total_vector[1] = 4.00 * ground_vector[1] + 0.12 * math.cos(black_walk_angle) + 0.20 * obstacle_tangent[1]
+			total_vector[2] = 4.00 * ground_vector[2] + 0.12 * math.sin(black_walk_angle) + 0.20 * obstacle_tangent[2]
+		end
+	else
+		total_vector[1] = 1.45 * light_vector[1]
+		total_vector[2] = 1.45 * light_vector[2]
+	end
 	if(black_ground_count > 0) then
 		black_floor_counter = 0
 	else
@@ -310,76 +346,123 @@ function HandleObstacle()
 		return false
 	end
 	if(obstacle_state == 1) then
-		-- Briefly nudge forward, then stop and lock as soon as the obstacle is close enough.
-		robot.turret.set_position_control_mode()
-		robot.turret.set_rotation(0)
-		robot.wheels.set_velocity(0.6 * WHEEL_SPEED, 0.6 * WHEEL_SPEED)
-		robot.gripper.unlock()
-		if(front_obstacle) then
-			obstacle_contact = obstacle_contact + front_left + front_right
-		else
-			obstacle_contact = 0
-		end
-		obstacle_counter = obstacle_counter + 1
-		obstacle_elapsed = obstacle_elapsed + 1
-				if((obstacle_counter >= OBSTACLE_APPROACH_STEPS and obstacle_contact >= OBSTACLE_CONTACT_THRESHOLD) or 
-					(front_close_count >= 2 and front_obstacle)) then
-			-- Enough sustained contact: switch to the locking phase.
-			obstacle_state = 2
-			obstacle_counter = 0
-		end
+		HandleObstacleApproach()
 	elseif(obstacle_state == 2) then
-		-- Stop and close the gripper while the turret is passive.
-		robot.wheels.set_velocity(0,0)
-		robot.turret.set_position_control_mode()
-		robot.turret.set_rotation(0)
-		robot.gripper.lock_positive()
-		obstacle_counter = obstacle_counter + 1
-		obstacle_elapsed = obstacle_elapsed + 1
-		if(obstacle_counter >= OBSTACLE_LOCK_STEPS) then
-			-- Once locked, rotate the robot away from the obstacle.
-			obstacle_state = 3
-			obstacle_counter = 0
-		end
+		HandleObstacleLock()
 	elseif(obstacle_state == 3) then
-		-- Turn briefly while carrying the obstacle.
-		robot.turret.set_passive_mode()
-		robot.wheels.set_velocity(obstacle_turn_sign * -OBSTACLE_TURN_SPEED, obstacle_turn_sign * OBSTACLE_TURN_SPEED)
+		HandleObstacleCarry()
+	else
+		HandleObstacleRelease()
+	end
+	if(ShouldAbortObstacleSequence()) then
+		ResetObstacleSequence()
+		return false
+	end
+	return true
+end
+
+---------------------------------------------------------------------------
+-- Reset obstacle-related actuators and counters after a release or timeout.
+function ResetObstacleSequence()
+	robot.turret.set_position_control_mode()
+	robot.turret.set_rotation(0)
+	robot.gripper.unlock()
+	robot.wheels.set_velocity(0,0)
+	obstacle_state = 0
+	obstacle_counter = 0
+	obstacle_contact = 0
+	obstacle_elapsed = 0
+	obstacle_cooldown = OBSTACLE_COOLDOWN_STEPS
+end
+
+---------------------------------------------------------------------------
+-- Abort the sequence if it has run for too long, except for the black-zone carry phase.
+function ShouldAbortObstacleSequence()
+	return obstacle_state ~= 0 and obstacle_elapsed >= OBSTACLE_MAX_STEPS and not (BEHAVIOR_STATE == STATE_BLACK_ZONE and obstacle_state >= 3)
+end
+
+---------------------------------------------------------------------------
+-- Approach an obstacle until it is centered and close enough to lock.
+function HandleObstacleApproach()
+	robot.turret.set_position_control_mode()
+	robot.turret.set_rotation(0)
+	robot.wheels.set_velocity(0.6 * WHEEL_SPEED, 0.6 * WHEEL_SPEED)
+	robot.gripper.unlock()
+	if(front_obstacle) then
+		obstacle_contact = obstacle_contact + front_left + front_right
+	else
+		obstacle_contact = 0
+	end
+	obstacle_counter = obstacle_counter + 1
+	obstacle_elapsed = obstacle_elapsed + 1
+	if((obstacle_counter >= OBSTACLE_APPROACH_STEPS and obstacle_contact >= OBSTACLE_CONTACT_THRESHOLD) or (front_close_count >= 2 and front_obstacle)) then
+		obstacle_state = 2
+		obstacle_counter = 0
+	end
+end
+
+---------------------------------------------------------------------------
+-- Close the gripper once the obstacle is sufficiently aligned.
+function HandleObstacleLock()
+	robot.wheels.set_velocity(0,0)
+	robot.turret.set_position_control_mode()
+	robot.turret.set_rotation(0)
+	robot.gripper.lock_positive()
+	obstacle_counter = obstacle_counter + 1
+	obstacle_elapsed = obstacle_elapsed + 1
+	if(obstacle_counter >= OBSTACLE_LOCK_STEPS) then
+		obstacle_state = 3
+		obstacle_counter = 0
+	end
+end
+
+---------------------------------------------------------------------------
+-- Carry the obstacle until the black-zone robot reaches grey or until the
+-- normal turn-and-release sequence finishes.
+function HandleObstacleCarry()
+	robot.turret.set_passive_mode()
+	if(BEHAVIOR_STATE == STATE_BLACK_ZONE) then
+		speeds = ComputePushTowardLightSpeeds()
+		robot.wheels.set_velocity(speeds[1], speeds[2])
 		obstacle_counter = obstacle_counter + 1
 		obstacle_elapsed = obstacle_elapsed + 1
-		if(obstacle_counter >= OBSTACLE_TURN_STEPS) then
-			-- Finished turning: move to the release phase.
+		if(black_ground_count == 0) then
 			obstacle_state = 4
 			obstacle_counter = 0
 		end
 	else
-		-- Stop, release, and cool down before the next grab.
-		robot.turret.set_position_control_mode()
-		robot.turret.set_rotation(0)
+		robot.wheels.set_velocity(obstacle_turn_sign * -OBSTACLE_TURN_SPEED, obstacle_turn_sign * OBSTACLE_TURN_SPEED)
+		obstacle_counter = obstacle_counter + 1
+		obstacle_elapsed = obstacle_elapsed + 1
+		if(obstacle_counter >= OBSTACLE_TURN_STEPS) then
+			obstacle_state = 4
+			obstacle_counter = 0
+		end
+	end
+end
+
+---------------------------------------------------------------------------
+-- Release the obstacle, or keep pushing it in the black zone until grey is seen.
+function HandleObstacleRelease()
+	robot.turret.set_position_control_mode()
+	robot.turret.set_rotation(0)
+	if(BEHAVIOR_STATE == STATE_BLACK_ZONE and black_ground_count > 0) then
+		speeds = ComputePushTowardLightSpeeds()
+		robot.wheels.set_velocity(speeds[1], speeds[2])
+		obstacle_counter = obstacle_counter + 1
+		obstacle_elapsed = obstacle_elapsed + 1
+	else
 		robot.wheels.set_velocity(0, 0)
 		robot.gripper.unlock()
 		obstacle_counter = obstacle_counter + 1
 		obstacle_elapsed = obstacle_elapsed + 1
-		if(obstacle_counter >= OBSTACLE_RELEASE_STEPS) then
+		if(obstacle_counter >= OBSTACLE_RELEASE_STEPS or black_ground_count == 0) then
 			obstacle_state = 0
 			obstacle_counter = 0
 			obstacle_cooldown = OBSTACLE_COOLDOWN_STEPS
 			obstacle_contact = 0
 		end
 	end
-	if(obstacle_state ~= 0 and obstacle_elapsed >= OBSTACLE_MAX_STEPS) then
-		robot.turret.set_position_control_mode()
-		robot.turret.set_rotation(0)
-		robot.gripper.unlock()
-		robot.wheels.set_velocity(0,0)
-		obstacle_state = 0
-		obstacle_counter = 0
-		obstacle_contact = 0
-		obstacle_cooldown = OBSTACLE_COOLDOWN_STEPS
-		obstacle_elapsed = 0
-		return false
-	end
-	return true
 end
 
 ---------------------------------------------------------------------------
@@ -537,6 +620,56 @@ function ComputeSpeedFromAngle(angle)
 
 	return speeds
 end
+
+---------------------------------------------------------------------------
+-- This function computes a forward-biased push toward the light so the robot
+-- keeps moving while carrying an obstacle in the black zone.
+function ComputePushTowardLightSpeeds()
+	forward_speed = 0.65 * WHEEL_SPEED
+	steer_speed = 0.30 * WHEEL_SPEED
+	steer = light_vector[2]
+	left_speed = forward_speed - steer_speed * steer
+	right_speed = forward_speed + steer_speed * steer
+	if(left_speed < 0.25 * WHEEL_SPEED) then
+		left_speed = 0.25 * WHEEL_SPEED
+	elseif(left_speed > WHEEL_SPEED) then
+		left_speed = WHEEL_SPEED
+	end
+	if(right_speed < 0.25 * WHEEL_SPEED) then
+		right_speed = 0.25 * WHEEL_SPEED
+	elseif(right_speed > WHEEL_SPEED) then
+		right_speed = WHEEL_SPEED
+	end
+	return {left_speed, right_speed}
+end
+
+---------------------------------------------------------------------------
+-- This function computes a forward-biased motion toward a target vector so
+-- the robot keeps moving while still steering around obstacles.
+function ComputeMoveTowardTargetSpeeds(target_vector)
+	target_angle = math.atan2(target_vector[2], target_vector[1])
+	forward_speed = 0.70 * WHEEL_SPEED
+	steer = target_angle
+	if(steer > math.pi/2) then
+		steer = math.pi/2
+	elseif(steer < -math.pi/2) then
+		steer = -math.pi/2
+	end
+	turn_speed = 0.45 * WHEEL_SPEED
+	left_speed = forward_speed - turn_speed * steer
+	right_speed = forward_speed + turn_speed * steer
+	if(left_speed < 0.20 * WHEEL_SPEED) then
+		left_speed = 0.20 * WHEEL_SPEED
+	elseif(left_speed > WHEEL_SPEED) then
+		left_speed = WHEEL_SPEED
+	end
+	if(right_speed < 0.20 * WHEEL_SPEED) then
+		right_speed = 0.20 * WHEEL_SPEED
+	elseif(right_speed > WHEEL_SPEED) then
+		right_speed = WHEEL_SPEED
+	end
+	return {left_speed, right_speed}
+end
 ---------------------------------------------------------------------------
 
 ---------------------------------------------------------------------------
@@ -615,6 +748,8 @@ function reset()
 	obstacle_cooldown = 0
 	obstacle_contact = 0
 	obstacle_elapsed = 0
+	black_walk_counter = 0
+	black_walk_angle = 0
 	-- ensure logs directory exists and open per-robot log
 	os.execute("mkdir -p "..directory)
 	logf = io.open(LOG_FILE, "w")
