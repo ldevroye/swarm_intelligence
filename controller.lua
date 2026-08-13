@@ -57,7 +57,7 @@ function step()
 	lj_vector = ProcessRAB_LJ() -- then we compute the angle to follow, using the other robots as input, see function code for details
 	light_vector = ComputeVectorToLight() -- we compute the vector towards the light source
 	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
-	close_obstacle_tangent = ComputeCloseObstacleVectorTangent()
+	close_obstacle_tangent, close_obstacle_count = ComputeCloseObstacleVectorTangent()
 	leader_vector = {0,0}
 	total_vector = {0,0}
 
@@ -74,7 +74,7 @@ function step()
 	speeds = ComputeSpeedFromAngle(target_angle) -- we now compute the wheel speed necessary to go in the direction of the target angle
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
 		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- move slowly while centering between light and obstacles
-	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
+	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
 		robot.wheels.set_velocity(0.85 * speeds[1], 0.85 * speeds[2]) -- keep advancing while still staying aligned
 	elseif(BEHAVIOR_STATE == STATE_BLACK_ZONE) then
 		robot.wheels.set_velocity(0.4 * speeds[1], 0.4 *speeds[2]) -- actuate wheels to move
@@ -109,7 +109,16 @@ function SetupStep()
 	end
 	if(black_ground_count == 0 and beacon_seen > 0) then
 		add_log("going towards it")
-		total_vector = beacon_vector
+		front_obstacle, front_left, front_right, front_centered, front_grabbable = ProcessFrontObstacle()
+		total_vector = {beacon_vector[1], beacon_vector[2]}
+		beacon_avoid_vector = ComputeVectorFromProximity()
+		total_vector[1] = total_vector[1] + 0.14 * beacon_avoid_vector[1]
+		total_vector[2] = total_vector[2] + 0.14 * beacon_avoid_vector[2]
+		if(front_obstacle) then
+			beacon_tangent = ComputeCloseObstacleVectorTangent()
+			total_vector[1] = total_vector[1] + 0.28 * beacon_tangent[1]
+			total_vector[2] = total_vector[2] + 0.28 * beacon_tangent[2]
+		end
 		target_angle = math.atan2(total_vector[2], total_vector[1])
 		speeds = ComputeSpeedFromAngle(target_angle)
 		robot.wheels.set_velocity(speeds[1], speeds[2])
@@ -127,7 +136,9 @@ function SetupStep()
 		obstacle_counter = 0
 		obstacle_contact = 0
 		obstacle_elapsed = 0
-		if(front_left >= front_right) then
+		if(math.abs(front_left - front_right) < 0.15) then
+			obstacle_turn_sign = (math.random() < 0.5) and -1 or 1
+		elseif(front_left >= front_right) then
 			obstacle_turn_sign = -1
 		else
 			obstacle_turn_sign = 1
@@ -160,10 +171,10 @@ function HandleGroupingState()
 	total_vector[1] = 1.20 * lj_vector[1] - 0.3 * light_vector[1] + 0.08 * obstacle_tangent[1] + 0.10 * leader_vector[1]
 	total_vector[2] = 1.20 * lj_vector[2] - 0.3 * light_vector[2] + 0.08 * obstacle_tangent[2] + 0.10 * leader_vector[2]
 
-	if(obstacle_state == 0) then
+	if(obstacle_state == 0 and close_obstacle_count >= 3) then
 		-- Add a sideways correction without losing the main target drive.
-		total_vector[1] = total_vector[1] + 0.7 * close_obstacle_tangent[1]
-		total_vector[2] = total_vector[2] + 0.7 * close_obstacle_tangent[2]
+		total_vector[1] = total_vector[1] + 0.2 * close_obstacle_tangent[1]
+		total_vector[2] = total_vector[2] + 0.2 * close_obstacle_tangent[2]
 	end
 
 	if(black_ground_count > 0) then
@@ -189,10 +200,10 @@ function HandleTunnelState()
 	total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.50 * ground_vector[1] + 0.05 * obstacle_vector[1]
 	total_vector[2] = lj_vector[2] - 1.05 * light_vector[2] + 0.50 * ground_vector[2] + 0.05 * obstacle_vector[2]
 	
-	if(obstacle_state == 0) then
+	if(obstacle_state == 0 and close_obstacle_count >= 3) then
 		-- Add a sideways correction without losing the main target drive.
-		total_vector[1] = total_vector[1] + 0.7 * close_obstacle_tangent[1]
-		total_vector[2] = total_vector[2] + 0.7 * close_obstacle_tangent[2]
+		total_vector[1] = total_vector[1] + 0.2 * close_obstacle_tangent[1]
+		total_vector[2] = total_vector[2] + 0.2 * close_obstacle_tangent[2]
 	end
 
 	if(black_ground_count > 0) then
@@ -276,7 +287,7 @@ function ComputeCloseObstacleVectorTangent()
 		end
 	end
 	if(close_count < 2) then
-		return tangent_v
+		return tangent_v, close_count
 	end
 	len = math.sqrt(close_prox_v[1] * close_prox_v[1] + close_prox_v[2] * close_prox_v[2])
 	if(len ~= 0) then
@@ -288,7 +299,7 @@ function ComputeCloseObstacleVectorTangent()
 		tangent_v[1] = tangent_v[1] / len
 		tangent_v[2] = tangent_v[2] / len
 	end
-	return tangent_v
+	return tangent_v, close_count
 end
 
 ---------------------------------------------------------------------------
@@ -407,7 +418,10 @@ function ProcessFrontObstacle()
 			front_centered = true
 		end
 	end
-	if(front_centered and front_close_count <= 5) then
+	if(front_obstacle and (front_sum >= OBSTACLE_CONTACT_THRESHOLD * 0.6 or front_max >= OBSTACLE_FRONT_THRESHOLD * 1.8)) then
+		front_grabbable = true
+	end
+	if(not front_grabbable and front_centered and front_sum >= OBSTACLE_CONTACT_THRESHOLD * 0.4) then
 		front_grabbable = true
 	end
 	return front_obstacle, front_left, front_right, front_centered, front_grabbable
