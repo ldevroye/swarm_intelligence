@@ -79,7 +79,6 @@ function step()
 	obstacle_vector = ComputeVectorFromProximity() -- we compute a repulsion vector away from nearby obstacles
 	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
 	leader_vector = ProcessRABLeaders() -- grouping robots can pull toward the local swarm structure
-	neighborhood_repulsion_vector = ProcessRABNeighborhoodRepulsion() -- black-zone robots should also spread apart locally
 
 	total_vector = {0,0}
 
@@ -106,6 +105,7 @@ function step()
 	else
 		robot.wheels.set_velocity(speeds[1], speeds[2])
 	end
+
 	robot.range_and_bearing.clear_data() -- forget about all received messages for next step
 end
 
@@ -123,6 +123,7 @@ function SetupStep()
 	robot.colored_blob_omnidirectional_camera.enable()
 	ground_vector, black_ground_count, gray_ground_count, black_edge_detected = ProcessGround() -- use floor sensors to bias motion into the black target area and detect black/grey edges
 	front_obstacle, front_left, front_right, front_centered, front_grabbable, front_robot_block, front_wall_block = ProcessFrontObstacle()
+	
 	if(BEHAVIOR_STATE == STATE_BLACK_ZONE and black_ground_count == 0) then
 		BEHAVIOR_STATE = STATE_TUNNEL
 		black_floor_counter = 0
@@ -133,8 +134,9 @@ function SetupStep()
 	if(BEHAVIOR_STATE == STATE_BLACK_ZONE) then
 		robot.leds.set_single_color(13, "green")
 	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
-		robot.leds.set_single_color(13, "blue")
+		robot.leds.set_single_color(13, "orange")
 	end
+
 	robot.range_and_bearing.set_data(1, BEHAVIOR_STATE) -- advertise our current phase to nearby robots
 	robot.range_and_bearing.set_data(2, BEHAVIOR_STATE == STATE_BLACK_ZONE and 1 or 0) -- explicitly mark robots that are in the black zone
 	beacon_vector, beacon_seen = ProcessBlackZoneBeacon()
@@ -142,6 +144,7 @@ function SetupStep()
 	if(beacon_seen > 0) then
 		add_log("beacon robot seen")
 	end
+
 	if(BEHAVIOR_STATE ~= STATE_BLACK_ZONE and black_ground_count == 0 and beacon_seen > 0) then
 		add_log("going towards it")
 		if(obstacle_state ~= 0) then
@@ -163,6 +166,7 @@ function SetupStep()
 	if(obstacle_cooldown > 0) then
 		obstacle_cooldown = obstacle_cooldown - 1
 	end
+
 	if(BEHAVIOR_STATE == STATE_BLACK_ZONE and obstacle_state == 0 and obstacle_cooldown == 0 and front_obstacle and front_grabbable) then
 		obstacle_state = 1
 		obstacle_counter = 0
@@ -177,11 +181,8 @@ function SetupStep()
 			obstacle_turn_sign = 1
 		end
 	end
-	if(BEHAVIOR_STATE == STATE_BLACK_ZONE and black_ground_count == 0) then
-		BEHAVIOR_STATE = STATE_TUNNEL
-		black_floor_counter = 0
-		black_walk_counter = 0
-	elseif(BEHAVIOR_STATE == STATE_BLACK_ZONE and black_ground_count > 0) then
+
+	if(BEHAVIOR_STATE == STATE_BLACK_ZONE and black_ground_count > 0) then
 		if (HandleObstacle()) then
 			add_log("handling obstacle")
 			robot.range_and_bearing.clear_data()
@@ -215,7 +216,7 @@ function HandleGroupingState()
 
 	close_obstacle_tangent, close_obstacle_count = ComputeCloseObstacleVectorTangent(total_vector)
 
-	if(front_obstacle and close_obstacle_count > 0) then
+	if(front_obstacle and close_obstacle_count == 1) then
 		add_log("close, deviating")
 		-- Add a sideways correction without losing the main target drive.
 		total_vector[1] = total_vector[1] + 0.4 * close_obstacle_tangent[1]
@@ -223,11 +224,16 @@ function HandleGroupingState()
 	end
 
 	if(black_ground_count > 0) then
-		BEHAVIOR_STATE = STATE_BLACK_ZONE
+		black_floor_counter = black_floor_counter + 1
+	else
 		black_floor_counter = 0
-		black_walk_counter = 0
-		return
 	end
+	
+	if(black_floor_counter >= BLACK_FLOOR_STEPS) then
+		BEHAVIOR_STATE = STATE_BLACK_ZONE
+		black_walk_counter = 0
+	end
+
 	if(FLOCKING_CONDITION == 1) then
 		flocking_trigger_counter = flocking_trigger_counter + 1
 		if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
@@ -243,12 +249,12 @@ end
 function HandleTunnelState()
 	TARGET_DIST=60
 	-- total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
-	total_vector[1] = lj_vector[1] - 1.1 * light_vector[1] + 4.5 * ground_vector[1] + 0.1 * leader_vector[1]
-	total_vector[2] = lj_vector[2] - 1.1 * light_vector[2] + 4.5 * ground_vector[2]  + 0.1 * leader_vector[2]
+	total_vector[1] = lj_vector[1] - 1.1 * light_vector[1] + 4.5 * ground_vector[1] + 0.2 * leader_vector[1]
+	total_vector[2] = lj_vector[2] - 1.1 * light_vector[2] + 4.5 * ground_vector[2]  + 0.2 * leader_vector[2]
 	
 	close_obstacle_tangent, close_obstacle_count = ComputeCloseObstacleVectorTangent(total_vector)
 
-	if(front_obstacle and close_obstacle_count > 0) then
+	if(front_obstacle and close_obstacle_count == 1) then
 		-- Add a sideways correction without losing the main target drive.
 		total_vector[1] = total_vector[1] + 0.4 * close_obstacle_tangent[1]
 		total_vector[2] = total_vector[2] + 0.4 * close_obstacle_tangent[2]
@@ -271,27 +277,16 @@ end
 function HandleBlackZoneState()
 	if(black_walk_counter <= 0) then
 		black_walk_counter = BLACK_RANDOM_WALK_STEPS
-		black_walk_angle = robot.random.uniform(-math.pi, math.pi)
+		black_walk_angle = robot.random.uniform(-math.pi / 3, math.pi /3)
 	end
 	black_walk_counter = black_walk_counter - 1
-
-	total_vector[1] = 0.25 * math.cos(black_walk_angle) + 0.20 * neighborhood_repulsion_vector[1]
-	total_vector[2] = 0.25 * math.sin(black_walk_angle) + 0.20 * neighborhood_repulsion_vector[2]
 	
-	if(black_ground_count == 0) then
-		BEHAVIOR_STATE = STATE_TUNNEL
-		black_floor_counter = 0
-	else
-		black_floor_counter = 0
-		if(black_ground_count < 4) then
-			total_vector[1] = total_vector[1] + (4 - black_ground_count) * EDGE_BLACK_BIAS_GAIN * ground_vector[1]
-			total_vector[2] = total_vector[2] + (4 - black_ground_count) * EDGE_BLACK_BIAS_GAIN * ground_vector[2]
-		end
-	end
-
 	if(black_edge_detected) then
-		total_vector[1] = total_vector[1] + 0.5 * EDGE_BLACK_BIAS_GAIN * ground_vector[1]
-		total_vector[2] = total_vector[2] + 0.5 * EDGE_BLACK_BIAS_GAIN * ground_vector[2]
+		total_vector[1] = EDGE_BLACK_BIAS_GAIN * ground_vector[1]
+		total_vector[2] = EDGE_BLACK_BIAS_GAIN * ground_vector[2]
+	else
+		total_vector[1] = 0.25 * math.cos(black_walk_angle) 
+		total_vector[2] = 0.25 * math.sin(black_walk_angle)
 	end
 end
 
@@ -638,27 +633,6 @@ function ProcessRABLeaders()
 		leader_v[2] = leader_v[2] / len
 	end
 	return leader_v
-end
-
----------------------------------------------------------------------------
--- This function computes a weighted repulsion vector from nearby robots so
--- the black-zone random walk also spreads the swarm apart.
-function ProcessRABNeighborhoodRepulsion()
-	neighborhood_v = {0,0}
-	for i = 1, #robot.range_and_bearing do
-		weight = 1.0
-		if(robot.range_and_bearing[i].range ~= nil and robot.range_and_bearing[i].range > 0.01) then
-			weight = 1.0 / robot.range_and_bearing[i].range
-		end
-		neighborhood_v[1] = neighborhood_v[1] - weight * math.cos(robot.range_and_bearing[i].horizontal_bearing)
-		neighborhood_v[2] = neighborhood_v[2] - weight * math.sin(robot.range_and_bearing[i].horizontal_bearing)
-	end
-	len = math.sqrt(neighborhood_v[1] * neighborhood_v[1] + neighborhood_v[2] * neighborhood_v[2])
-	if(len ~= 0) then
-		neighborhood_v[1] = neighborhood_v[1] / len
-		neighborhood_v[2] = neighborhood_v[2] / len
-	end
-	return neighborhood_v
 end
 
 --------------------------------------------------------------------------
