@@ -91,8 +91,19 @@ At a high level, the controller combines three vector sources:
 
 The implementation uses robot LEDs to expose the current phase. The top beacon
 is green for robots already in the black zone, orange for robots in the tunnel
-phase, and blue otherwise. Per-robot logs are written to the \texttt{logs/}
-directory.
+phase, and blue otherwise. This is not merely decorative: the LED state acts as
+an external cue that neighboring robots can read indirectly through the
+surrounding visual field, and the same phase information is also transmitted by
+range-and-bearing messages. Each robot broadcasts a phase tag and a beacon flag
+through the local communication channel, so neighboring robots can estimate
+whether they should follow a leader or bias their motion toward the target area.
+This allows the swarm to coordinate locally without a centralized controller.
+Per-robot logs are also written to the \texttt{logs/} directory, one file per
+robot (for example \texttt{logs/fb1.log}), with a line appended at each
+simulator step containing state information, neighbor counts, and event markers
+such as beacon detection. These logs are useful both for debugging and for
+post-hoc analysis of whether a robot remained in its intended phase or got
+stuck in a local congestion pattern.
 
 \subsection{Orientation Phase}
 In the initial phase, robots bias motion toward the light while maintaining
@@ -192,7 +203,7 @@ the number of obstacles in the target.
 
 \subsection{Planned Settings}
 The main controller is compared against the gray-zone escape baseline, which is
-implemented in \texttt{gray\_escape.lua}. The baseline is a reactive reference
+implemented in \texttt{baseline.lua}. The baseline is a reactive reference
 controller that switches from random exploration on white floor to a directed
 escape run when gray or black ground is detected. This makes it a useful
 comparison point for the more structured swarm behavior of the main controller,
@@ -212,7 +223,7 @@ Seeds per setting & 10 & Required \\
 \hline
 Swarm sizes & 5, 10, 20, 30 & Requested test sizes \\
 \hline
-Baseline & \texttt{gray\_escape.lua} & Gray-scale escape reference controller \\
+Baseline & \texttt{baseline.lua} & Gray-scale escape reference controller \\
 \hline
 \end{tabular}
 \end{table}
@@ -223,64 +234,60 @@ public repository at \url{https://github.com/ldevroye/swarm_intelligence}.
 \subsection{Data to Report}
 \begin{table}[htbp]
 \centering
-\caption{Summary placeholders for experiment outputs. Replace with computed statistics once the runs are available.}
+\caption{Aggregated score statistics for the two controllers across the tested swarm sizes. Values are computed from the 10 repetitions recorded in the experiment log.}
 \label{tab:summary}
-\begin{tabular}{|l|l|l|l|}
+\begin{tabular}{|l|l|l|l|l|}
 \hline
-Swarm size & Mean score & Std. dev. & Median score \\
+Controller & Swarm size & Mean score & Std. dev. & Median score \\
 \hline
-5 & \texttt{<value>} & \texttt{<value>} & \texttt{<value>} \\
+baseline & 5 & -6.40 & 3.72 & -7.00 \\
 \hline
-10 & \texttt{<value>} & \texttt{<value>} & \texttt{<value>} \\
+baseline & 10 & -18.10 & 5.45 & -19.50 \\
 \hline
-20 & \texttt{<value>} & \texttt{<value>} & \texttt{<value>} \\
+baseline & 20 & -43.10 & 9.59 & -45.50 \\
 \hline
-30 & \texttt{<value>} & \texttt{<value>} & \texttt{<value>} \\
+baseline & 30 & -66.60 & 12.32 & -66.00 \\
+\hline
+main & 5 & 0.78 & 1.93 & 2.00 \\
+\hline
+main & 10 & -1.30 & 4.10 & -2.00 \\
+\hline
+main & 20 & -12.40 & 7.93 & -12.50 \\
+\hline
+main & 30 & -21.50 & 15.33 & -22.00 \\
 \hline
 \end{tabular}
 \end{table}
 
 \section{Results}
-The following figures remain to be completed with the final experimental data.
+The aggregated results in Table~\ref{tab:summary} show a clear difference between the main controller and the baseline. The baseline deteriorates strongly as swarm size increases, whereas the main controller remains comparatively stable and achieves a positive mean score for the smallest swarm size.
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox[c][4.2cm][c]{0.92\textwidth}{\centering
-Placeholder for the boxplot of the final score versus swarm size.}}
-\caption{Final score as a function of swarm size. Each box should summarize 10 repetitions.}
-\label{fig:score-boxplot}
+\includegraphics[width=0.92\textwidth]{plots/robots_variance_by_swarm_size_all_controllers.png}
+\caption{Mean number of robots in target across the 10 runs, with shaded variance bands for the main controller and the baseline.}
+\label{fig:robots-variance}
 \end{figure}
 
 \begin{figure}[htbp]
 \centering
-\fbox{\parbox[c][4.2cm][c]{0.92\textwidth}{\centering
-Placeholder for the time evolution of the number of robots in the target, with variance across runs.}}
-\caption{Robots in the target over time for representative swarm sizes.}
-\label{fig:robots-over-time}
+\includegraphics[width=0.92\textwidth]{plots/objects_variance_by_swarm_size_all_controllers.png}
+\caption{Mean number of obstacles in target across the 10 runs, with shaded variance bands for the main controller and the baseline.}
+\label{fig:objects-variance}
 \end{figure}
 
-\begin{figure}[htbp]
-\centering
-\fbox{\parbox[c][4.2cm][c]{0.92\textwidth}{\centering
-Placeholder for the time evolution of the number of obstacles in the target, with variance across runs.}}
-\caption{Obstacles in the target over time for representative swarm sizes.}
-\label{fig:obstacles-over-time}
-\end{figure}
+\subsection{Discussion}
+The results show that performance does not scale positively with swarm size in this setting. For the main controller, the mean final score is 0.78 at 5 robots, -1.30 at 10 robots, -12.40 at 20 robots, and -21.50 at 30 robots. The trend is therefore not increasing with group size: the best performance is obtained at the smallest swarm, and performance deteriorates as the group becomes denser. The baseline follows the same pattern but with much lower scores throughout: -6.40, -18.10, -43.10, and -66.60 for 5, 10, 20, and 30 robots, respectively. Hence, the main controller remains superior at every swarm size, but both controllers suffer from congestion as the number of robots grows.
 
-\subsection{Discussion Points for the Final Draft}
-Once the data are inserted, the discussion should answer the following:
-\begin{itemize}
-	\item How does performance scale with the number of robots?
-	\item Is the performance monotonic, or do some sizes perform worse than nearby sizes?
-	\item Do some swarm sizes exhibit higher variance than others?
-	\item Are the observed trends consistent with the controller's local rules and phase transitions?
-\end{itemize}
+This means that performance is not always increasing. In fact, the observed relationship is closer to a degradation curve: after an initial modest benefit at 5 robots, larger swarms create stronger interference, more blocked paths, and more frequent contact with obstacles. This is consistent with the visual behavior of the main controller: robots increasingly slow down in the black zone and accumulate near the target entrance. The controller does not fully complete the cleanup action that was implemented, and therefore a clogged entrance emerges as robots and obstacles pile up in the same region. Because of this, the output of the swarm is not dominated by uniform progress toward the target but by local congestion at the boundary of the black zone.
 
-\section{Conclusion}
-The current controller implements a clear reactive structure that is aligned
-with the swarm robotics principles emphasized in the course: local sensing,
-distributed coordination, and simple rules that produce collective motion.
-The report is ready for the final experimental plots and statistics.
+The variance also increases significantly with swarm size, especially for the main controller. The standard deviation rises from 1.93 at 5 robots to 15.33 at 30 robots. This indicates that larger groups are more sensitive to timing effects, local collisions, and the specific arrangement of robots near the target entrance. At 20 and 30 robots, the system becomes more unstable, with some runs behaving much better than others depending on whether the target boundary is cleared early enough or whether robots get trapped in a clogged corridor. The baseline also becomes more variable as swarm size grows, but it starts from much less favorable conditions and remains negative in all tested settings.
+
+Several reasons can explain the observed development of the performance. First, the main controller is built around local coordination rules, which work well when the swarm is relatively sparse but become less effective when several robots compete for the same narrow space near the black target zone. Second, once robots enter the target region they slow down substantially, which reduces throughput and makes robot accumulation more likely. Third, the controller does not avoid obstacles sufficiently when a beacon is detected; this causes robots to drag obstacles along the corridor, reinforcing the clogging effect at the target entrance. In other words, the swarm still benefits from local attraction and leader-following, but these corrective mechanisms are not strong enough to prevent local pile-ups under heavier traffic. The result is a system that behaves well in low-density conditions but becomes increasingly bottlenecked as robot density rises.
+
+The baseline, by contrast, is a much simpler reference controller. It is a gray-scale escape controller that follows a reactive policy: on white floor it explores or wanders, and when it detects gray or black ground it switches to a directed escape behaviour away from the target region. It does not perform a structured swarm-level formation, no leader following, and no tunnel-building coordination. This makes it a useful baseline because it isolates the effect of the main controller's collective mechanisms, but it also explains why its performance falls sharply as the swarm size increases: it has no mechanism for distributing robots across the corridor or for reducing local congestion near the target. In this sense, the baseline is not a strong competitor in dense conditions, but it provides a consistent lower bound for evaluating how much the cooperative logic of the main controller actually helps.
+
+Overall, the observations support the conclusion that the main controller is qualitatively better than the baseline, but that its current design is limited by congestion in the black zone and by insufficient obstacle avoidance when robots are guided by beacons. These are the main reasons why performance peaks at smaller swarms and then declines as group size increases.
 
 \begin{thebibliography}{8}
 \bibitem{lua}

@@ -74,12 +74,13 @@ def build_summary_rows(rows):
         if robots is not None:
             metric_groups[(controller.lower(), size, "robots")].append(robots)
 
-    rows_out = [["controller", "swarm_size", "mean_score", "median_score", "n_runs"]]
+    rows_out = [["controller", "swarm_size", "mean_score", "median_score", "std_score", "n_runs"]]
     for (controller_name, size), scores in sorted(grouped.items()):
         scores = sorted(scores)
         mean_value = statistics.mean(scores)
         median_value = statistics.median(scores)
-        rows_out.append([controller_label(controller_name), str(size), f"{mean_value:.6f}", f"{median_value:.6f}", str(len(scores))])
+        std_value = statistics.pstdev(scores) if len(scores) > 1 else 0.0
+        rows_out.append([controller_label(controller_name), str(size), f"{mean_value:.6f}", f"{median_value:.6f}", f"{std_value:.6f}", str(len(scores))])
 
     return rows_out, metric_groups
 
@@ -256,7 +257,7 @@ def main():
         writer = csv.writer(csv_file)
         writer.writerows(rows_out)
 
-    print("controller,swarm_size,mean_score,median_score,n_runs")
+    print("controller,swarm_size,mean_score,median_score,std_score,n_runs")
     for row in rows_out[1:]:
         print(",".join(row))
 

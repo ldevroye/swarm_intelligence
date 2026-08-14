@@ -15,8 +15,9 @@ this is a local reactive controller for foot-bot robots running in ARGoS
 ## project layout
 
 - `controller.lua` : main robot controller
-- `blind.argos` : main experiment config used by the project
-- `script.argos` : alternate config
+- `baseline.lua` : naive, comparison controller
+- `blind.argos` : main experiment (headless) config used by the project
+- `script.argos` : visual run
 - `build.sh` : build helper for the ARGoS plugin
 - `src/` : native C++ plugin sources
 - `doc/` : project notes and technical references
@@ -41,10 +42,17 @@ or, if the project is configured to use the provided wrapper:
 ```bash
 srcargos && argos3 -c blind.argos 2>out.txt
 ```
+to run the headless script.
+
+Or, if you want to see LEDs and bots :
+```bash
+srcargos && argos3 -c script.argos 2>out.txt
+```
+
 
 ## important notes
 
-- the controller is loaded by `blind.argos` via the `script` param
+- the controller is loaded by `.argos` scripts via the `script` param
 - the simulation uses a black target area and a light source
 - robot behavior is based on local sensing and local communication
 - logs are written per robot under the `logs/` folder
@@ -53,7 +61,6 @@ srcargos && argos3 -c blind.argos 2>out.txt
 
 - `output.txt` : simulation output from loop functions
 - `logs/` : per-robot log files
-- `tunnel.log` : produced by the headless run workflow when available
 
 ## behavior overview
 

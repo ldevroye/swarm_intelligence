@@ -1,9 +1,9 @@
-controller,swarm_size,mean_score,median_score,n_runs
-baseline (baseline.lua),5,-6.400000,-7.000000,10
-baseline (baseline.lua),10,-18.100000,-19.500000,10
-baseline (baseline.lua),20,-43.100000,-45.500000,10
-baseline (baseline.lua),30,-66.600000,-66.000000,10
-main (controller.lua),5,0.777778,2.000000,9
-main (controller.lua),10,-1.300000,-2.000000,10
-main (controller.lua),20,-12.400000,-12.500000,10
-main (controller.lua),30,-21.500000,-22.000000,10
+controller,swarm_size,mean_score,median_score,std_score,n_runs
+baseline (baseline.lua),5,-6.400000,-7.000000,3.720215,10
+baseline (baseline.lua),10,-18.100000,-19.500000,5.448853,10
+baseline (baseline.lua),20,-43.100000,-45.500000,9.585927,10
+baseline (baseline.lua),30,-66.600000,-66.000000,12.322337,10
+main (controller.lua),5,0.777778,2.000000,1.930905,9
+main (controller.lua),10,-1.300000,-2.000000,4.100000,10
+main (controller.lua),20,-12.400000,-12.500000,7.927168,10
+main (controller.lua),30,-21.500000,-22.000000,15.331340,10
