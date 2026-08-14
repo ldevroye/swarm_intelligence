@@ -98,12 +98,16 @@ surrounding visual field, and the same phase information is also transmitted by
 range-and-bearing messages. In practice, the green beacon functions as a local
 recruitment signal: robots in the orientation, grouping, or tunnel phases bias
 their motion toward nearby green beacons, which indicates that a peer has already
-reached the target area and can serve as a guide for the rest of the swarm. 
-Once a robot is inside the black zone, it is no longer attracted by the beacon 
-as a destination signal; instead, it remains in the target region and continues
-its local randomized motion while maintaining boundary avoidance. This allows
-the swarm to coordinate better although the obstacle avoidance when reaching for 
-a beacon could use a bit of fine tuning.
+reached the target area and can serve as a guide for the rest of the swarm.
+Once a robot is inside the black zone, it is no longer attracted by the beacon as 
+a destination signal; instead, it remains in the target region and continues its 
+local randomized motion while maintaining boundary avoidance.
+To prevent stalled configurations and symmetric deadlocks, the controller also
+adds a small amount of random heading fuzzing to the motion command; this keeps
+robots from remaining trapped in a local equilibrium when congestion or obstacle
+alignment would otherwise freeze the swarm. This allows the swarm to coordinate 
+better although the obstacle avoidance when reaching for a beacon could use a bit 
+of fine tuning.
 
 Per-robot logs are also written to the \texttt{logs/} directory, one file per
 robot (for example \texttt{logs/fb1.log}), with a line appended at each
