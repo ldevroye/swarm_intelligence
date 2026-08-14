@@ -68,3 +68,6 @@ srcargos && argos3 -c script.argos 2>out.txt
 - form a group in the tunnel phase
 - move toward the black target zone
 - maintain low-level obstacle avoidance and black-floor tracking
+
+## LICENCE
+MIT
