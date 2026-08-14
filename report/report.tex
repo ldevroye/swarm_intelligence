@@ -57,8 +57,9 @@ generate large, surprising, and structured collective behavior.
 \section{Problem Definition and Requirements}
 The arena is a rectangular environment with a white starting area on the left,
 an obstacle field in the middle, and a black target area on the right. The
-project brief specifies a 1{,}000 second run, corresponding to 10{,}000 ARGoS
-steps, although a shorter runtime may be used if justified in the report.
+project brief specifies a 1{,}000-second run, corresponding to 10{,}000 ARGoS
+simulation steps. This horizon is long enough to observe both the initial swarm
+assembly phase and the later target-entry dynamics.
 
 The available sensors and actuators include proximity, light, motor-ground,
 range-and-bearing, colored-blob omnidirectional camera, wheels, LEDs, gripper,
@@ -178,28 +179,29 @@ knowledge. The most relevant conditions are:
 	\item a beacon-based check to bias motion once inside the target region.
 \end{itemize}
 
-In practice, it is difficult to make the different states behave very
-distinctly, because each phase depends on careful tuning of thresholds and on a
-growing amount of branching in the control logic. 
-Making each addition exponentially more difficult to maintain.
+In practice, the different states are not sharply separated in behavior because
+each phase depends on carefully tuned thresholds and on a growing amount of
+branching in the control logic. This makes the controller harder to maintain as
+new rules are added.
 
 \subsection{Intended Obstacle Handling}
-The source also contains an obstacle-handling sequence that would be used only
-in the black zone when a grabbable obstacle is centered in front of the robot
-and the cooldown timer has expired. If enabled, the robot would first approach
-the obstacle slowly, accumulate front contact information, close the gripper
-once alignment is good enough, and switch the turret to passive mode while the
-object is carried. The robot would then move while holding the obstacle,
-following a light-directed motion, and release it after the carry phase or if
-the sequence must be aborted. The sequence is also guarded by checks that stop
-it if the floor is no longer black or if the controller leaves the black-zone
-context. Leaving the obstacle in the gray area
+The source also contains an obstacle-handling sequence intended for the
+black-zone phase, when a grabbable obstacle is centered in front of the robot
+and the cooldown timer has expired. In that case, the robot would approach the
+obstacle slowly, accumulate front-contact information, close the gripper once
+alignment is sufficient, and switch the turret to passive mode while carrying
+the object. It would then move while holding the obstacle, follow the
+light-directed motion, and release the object after the carry phase or if the
+sequence must be aborted. This behavior is guarded by checks that stop the
+sequence if the floor is no longer black or if the controller leaves the
+black-zone context, preventing the robot from carrying obstacles back into the
+gray area.
 
 \section{Experimental Protocol}
 The project brief requests 10 runs per configuration with different random
-seeds. The report should present boxplots of the final score for each swarm
-size, along with time-series plots for the number of robots in the target and
-the number of obstacles in the target.
+seeds. The comparison therefore reports the distribution of final scores for
+each swarm size, together with the mean number of robots in the target over
+time and the mean number of obstacles in the target over time.
 
 \subsection{Planned Settings}
 The main controller is compared against the gray-zone escape baseline, which is
@@ -211,7 +213,7 @@ which relies on local grouping, leader-following, and tunnel-phase transitions.
 
 \begin{table}[htbp]
 \centering
-\caption{Planned experimental settings. Replace placeholders with the final tested configurations.}
+\caption{Experimental settings used for the comparison.}
 \label{tab:settings}
 \begin{tabular}{|l|l|l|}
 \hline
