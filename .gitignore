@@ -16,3 +16,4 @@ report/*.aux
 report/*.bst
 
 *.png
+zip/
