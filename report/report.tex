@@ -1,0 +1,263 @@
+\documentclass[runningheads]{llncs}
+\usepackage{graphicx}
+
+\begin{document}
+
+\title{A Reactive Swarm Controller for the ARGoS Tunnelling Task}
+
+\author{Louis Cours}
+
+\authorrunning{L. Cours}
+
+\institute{Swarm Intelligence, INFO-H-414}
+
+\maketitle
+
+\begin{abstract}
+This report presents a reactive controller for the ARGoS tunnelling project.
+The implementation combines local repulsion and attraction vectors, a
+phase-based state machine, and a small set of arena cues to coordinate a swarm
+of foot-bots without centralized control. The controller uses range-and-bearing
+communication to maintain spacing, proximity and light sensing to bias motion,
+and motor-ground readings to detect the black target zone. The current version
+implements three main phases: initial orientation, grouping, and tunnel
+progression, followed by a black-zone behavior that keeps the robots inside the
+target region once they enter it. The report also documents the project
+requirements, the design choices made in the controller, and the evaluation
+protocol to be used for scaling experiments. Experimental figures and summary
+tables are left as explicit placeholders where results still need to be added.
+\keywords{swarm robotics \and ARGoS \and Lua \and tunnelling \and foot-bot}
+\end{abstract}
+
+\section{Introduction}
+The project asks for a cooperative collective behavior able to solve the
+tunnelling task in ARGoS: the swarm must move through an obstacle-filled arena,
+reach the target zone on the right, and avoid bringing obstacles into the
+target. The score is defined as the number of robots in the target minus the
+number of obstacles in the target at the end of the run. The assignment also
+requires repeated runs with different random seeds, performance summaries in the
+form of boxplots, and a scalability analysis across swarm sizes.
+
+The implementation discussed in this report is written in Lua for the foot-bot
+platform and follows the local sensing and actuation model described in the
+course notes for Lua and the foot-bot API~\cite{lua,footbot}. The design is
+intentionally reactive: each robot reacts to nearby peers, light, floor color,
+and obstacles rather than relying on a global map or centralized coordination.
+
+\section{Problem Definition and Requirements}
+The arena is a rectangular environment with a white starting area on the left,
+an obstacle field in the middle, and a black target area on the right. The
+project brief specifies a 1{,}000 second run, corresponding to 10{,}000 ARGoS
+steps, although a shorter runtime may be used if justified in the report.
+
+The available sensors and actuators include proximity, light, motor-ground,
+range-and-bearing, colored-blob omnidirectional camera, wheels, LEDs, gripper,
+and turret. The brief emphasizes cooperative behavior, use of swarm robotics
+principles, repeated runs over 10 seeds, and a scaling study over several swarm
+sizes. In addition to the final score, the project data file records the number
+of robots and obstacles in the target at each step.
+
+\subsection{Evaluation Criteria}
+The main quantities to report are:
+\begin{itemize}
+	\item final score as a function of swarm size,
+	\item number of robots in the target over time,
+	\item number of obstacles in the target over time,
+	\item variability across the 10 repetitions for each configuration.
+\end{itemize}
+
+\section{Controller Overview}
+The controller is organized as a state machine with four phases: orientation,
+grouping, tunnel progression, and black-zone behavior. The transition logic is
+driven by local conditions such as the number of neighbors at a target spacing,
+floor color, and whether the robot has already entered the black target zone.
+
+At a high level, the controller combines three vector sources:
+\begin{itemize}
+	\item a Lennard--Jones interaction over range-and-bearing messages,
+	\item a light-seeking vector from the ambient light sensor,
+	\item obstacle repulsion and tangential corrections from proximity readings.
+\end{itemize}
+
+The implementation also uses robot LEDs to expose the current phase, which is
+useful during debugging and qualitative analysis. Per-robot logs are written to
+the \texttt{logs/} directory.
+
+\subsection{Orientation Phase}
+In the initial phase, robots bias motion toward the light while maintaining some
+distance from nearby robots and obstacles. The controller uses the light vector,
+the Lennard--Jones interaction, and a small obstacle tangential correction to
+avoid overcrowding at the start. After a fixed number of steps, the robot moves
+to the grouping phase.
+
+\subsection{Grouping Phase}
+The grouping phase uses the range-and-bearing system to enforce a loose swarm
+structure. The code computes a Lennard--Jones potential at the current peer
+distance and counts neighbors in a target interval around 80 cm. Once enough
+neighbors are found consistently for a sufficient number of steps, the robot
+switches to the tunnel phase.
+
+The controller also computes a leader vector from robots that already advanced
+into later phases. This creates a simple local bootstrap effect: robots that are
+already closer to the target influence nearby robots to follow them.
+
+\subsection{Tunnel Phase}
+The tunnel phase reduces the target spacing to 60 cm and strengthens the
+attraction toward robots already in the tunnel. The phase uses a combination of
+Lennard--Jones interaction, light attraction, and leader following. If an
+obstacle is directly ahead, the controller adds a sideways correction so the
+robot can move around the obstacle field instead of pushing straight through it.
+
+This phase is the main navigation behavior of the current implementation. It is
+designed to help the swarm advance collectively through the clutter while still
+preserving a coherent formation.
+
+\subsection{Black-Zone Phase}
+When enough floor sensors detect black for several consecutive steps, the robot
+enters the black-zone state. In this state, the controller keeps the robot in
+the target region and uses a randomized heading segment to avoid getting stuck
+on the boundary. If the robot sees the green beacon of another robot already in
+the black zone, it will bias motion toward that robot as a simple local cue.
+
+The motor-ground readings are central here: they determine when the robot has
+reached the target and when it should leave the boundary-following motion.
+
+\section{Implementation Details}
+\subsection{Sensors and Local Rules}
+The controller uses the following signals:
+\begin{itemize}
+	\item \textbf{Proximity sensors}: obstacle repulsion, obstacle tangential motion, and wall/robot blocking.
+	\item \textbf{Light sensors}: orientation toward the ambient cue.
+	\item \textbf{Motor-ground sensors}: detection of the black target zone.
+	\item \textbf{Range-and-bearing}: local communication and Lennard--Jones spacing.
+	\item \textbf{Colored-blob camera}: detection of a green beacon emitted by robots already in the black zone.
+	\item \textbf{LEDs}: visual phase feedback during simulation.
+\end{itemize}
+
+The wheel command is computed from the target vector angle with a simple
+proportional steering law. The result is clamped to the allowed wheel speed.
+This keeps the behavior easy to reason about and consistent with the reactive
+style encouraged in the project brief.
+
+\subsection{State Transitions}
+The state machine is driven by local counts and thresholds rather than by global
+knowledge. The most relevant conditions are:
+\begin{itemize}
+	\item a minimum number of neighbors in the target spacing interval,
+	\item a minimum duration during which that grouping condition must hold,
+	\item a consecutive black-floor counter before entering the black zone,
+	\item a beacon-based check to bias motion once inside the target region.
+\end{itemize}
+
+\subsection{Current Limitation}
+The controller contains an obstacle-grabbing sequence using the gripper and
+turret, but that path is currently disabled in the implementation because the
+corresponding handler returns immediately. As a result, the current version
+focuses on navigation, grouping, and black-zone stabilization rather than on
+physical obstacle transport. This should be stated explicitly in the final
+report, since the project brief expects the gripper and turret to be used for a
+full tunnelling solution.
+
+\section{Experimental Protocol}
+The project brief requests 10 runs per configuration with different random
+seeds. The report should present boxplots of the final score for each swarm
+size, along with time-series plots for the number of robots in the target and
+the number of obstacles in the target.
+
+\subsection{Planned Settings}
+\begin{table}[htbp]
+\centering
+\caption{Planned experimental settings. Replace placeholders with the final tested configurations.}
+\label{tab:settings}
+\begin{tabular}{|l|l|l|}
+\hline
+Configuration & Value & Notes \\
+\hline
+Run duration & 10{,}000 steps & Default setting \\
+\hline
+Seeds per setting & 10 & Required \\
+\hline
+Swarm sizes & \texttt{<insert sizes>} & Prefer higher resolution \\
+\hline
+Baseline & \texttt{<insert baseline if any>} & Optional comparison \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Data to Report}
+\begin{table}[htbp]
+\centering
+\caption{Summary placeholders for experiment outputs. Replace with computed statistics once the runs are available.}
+\label{tab:summary}
+\begin{tabular}{|l|l|l|l|}
+\hline
+Swarm size & Mean score & Std. dev. & Median score \\
+\hline
+\texttt{<n1>} & \texttt{<value>} & \texttt{<value>} & \texttt{<value>} \\
+\hline
+\texttt{<n2>} & \texttt{<value>} & \texttt{<value>} & \texttt{<value>} \\
+\hline
+\texttt{<n3>} & \texttt{<value>} & \texttt{<value>} & \texttt{<value>} \\
+\hline
+\end{tabular}
+\end{table}
+
+\section{Results}
+The following figures are placeholders for the final analysis. They should be
+replaced by the actual plots generated from the 10 repeated runs per swarm size.
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox[c][4.2cm][c]{0.92\textwidth}{\centering
+Placeholder for the boxplot of the final score versus swarm size.}}
+\caption{Final score as a function of swarm size. Each box should summarize 10 repetitions.}
+\label{fig:score-boxplot}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox[c][4.2cm][c]{0.92\textwidth}{\centering
+Placeholder for the time evolution of the number of robots in the target, with variance across runs.}}
+\caption{Robots in the target over time for representative swarm sizes.}
+\label{fig:robots-over-time}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox[c][4.2cm][c]{0.92\textwidth}{\centering
+Placeholder for the time evolution of the number of obstacles in the target, with variance across runs.}}
+\caption{Obstacles in the target over time for representative swarm sizes.}
+\label{fig:obstacles-over-time}
+\end{figure}
+
+\subsection{Discussion Points for the Final Draft}
+Once the data are inserted, the discussion should answer the following:
+\begin{itemize}
+	\item How does performance scale with the number of robots?
+	\item Is the performance monotonic, or do some sizes perform worse than nearby sizes?
+	\item Do some swarm sizes exhibit higher variance than others?
+	\item Are the observed trends consistent with the controller's local rules and phase transitions?
+\end{itemize}
+
+\section{Conclusion}
+The current controller implements a clear reactive structure that is aligned
+with the swarm robotics principles emphasized in the course: local sensing,
+distributed coordination, and simple rules that produce collective motion.
+The report draft is complete enough to receive the final experimental plots and
+statistics, but the obstacle-transport capability still needs to be finished or
+explicitly presented as an open limitation if no further code changes are made.
+
+\begin{thebibliography}{8}
+\bibitem{lua}
+H414 -- Swarm Intelligence: Programming the Robots with Lua. Course reference document.
+
+\bibitem{footbot}
+H414 -- Swarm Intelligence: Sensor and actuator reference for the foot-bot. Course reference document.
+
+\bibitem{projectbrief}
+H414 -- Swarm Intelligence: Evaluation and Final Project of INFO-H-414 Swarm Intelligence, Second Session.
+
+\bibitem{llncs}
+Springer: Lecture Notes in Computer Science style and sample paper documentation.
+\end{thebibliography}
+\end{document}
