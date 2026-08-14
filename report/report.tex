@@ -95,10 +95,16 @@ is green for robots already in the black zone, orange for robots in the tunnel
 phase, and blue otherwise. This is not merely decorative: the LED state acts as
 an external cue that neighboring robots can read indirectly through the
 surrounding visual field, and the same phase information is also transmitted by
-range-and-bearing messages. Each robot broadcasts a phase tag and a beacon flag
-through the local communication channel, so neighboring robots can estimate
-whether they should follow a leader or bias their motion toward the target area.
-This allows the swarm to coordinate locally without a centralized controller.
+range-and-bearing messages. In practice, the green beacon functions as a local
+recruitment signal: robots in the orientation, grouping, or tunnel phases bias
+their motion toward nearby green beacons, which indicates that a peer has already
+reached the target area and can serve as a guide for the rest of the swarm. 
+Once a robot is inside the black zone, it is no longer attracted by the beacon 
+as a destination signal; instead, it remains in the target region and continues
+its local randomized motion while maintaining boundary avoidance. This allows
+the swarm to coordinate better although the obstacle avoidance when reaching for 
+a beacon could use a bit of fine tuning.
+
 Per-robot logs are also written to the \texttt{logs/} directory, one file per
 robot (for example \texttt{logs/fb1.log}), with a line appended at each
 simulator step containing state information, neighbor counts, and event markers
@@ -143,8 +149,13 @@ than as isolated individuals.
 When enough floor sensors detect black for several consecutive steps, the robot
 enters the black-zone state. In this state, the controller keeps the robot in
 the target region and uses a randomized heading segment to avoid getting stuck
-on the boundary. If the robot sees the green beacon of another robot already in
-the black zone, it biases motion toward that robot as a local cue.
+on the boundary. The beacon is not a steering target for robots already in this
+state: the black-zone robot continues its local motion inside the target and
+uses boundary cues and floor readings rather than following peers. The only
+robots that intentionally run toward a green beacon are robots in earlier
+phases, which treat the beacon as a local sign that another robot has already
+reached the black zone and that the swarm should bias its movement in that
+direction.
 
 The motor-ground readings are central here: they determine when the robot has
 reached the target and when it should leave the boundary-following motion.
@@ -289,7 +300,8 @@ Several reasons can explain the observed development of the performance. First, 
 
 The baseline, by contrast, is a much simpler reference controller. It is a gray-scale escape controller that follows a reactive policy: on white floor it explores or wanders, and when it detects gray or black ground it switches to a directed escape behaviour away from the target region. It does not perform a structured swarm-level formation, no leader following, and no tunnel-building coordination. This makes it a useful baseline because it isolates the effect of the main controller's collective mechanisms, but it also explains why its performance falls sharply as the swarm size increases: it has no mechanism for distributing robots across the corridor or for reducing local congestion near the target. In this sense, the baseline is not a strong competitor in dense conditions, but it provides a consistent lower bound for evaluating how much the cooperative logic of the main controller actually helps.
 
-Overall, the observations support the conclusion that the main controller is qualitatively better than the baseline, but that its current design is limited by congestion in the black zone and by insufficient obstacle avoidance when robots are guided by beacons. These are the main reasons why performance peaks at smaller swarms and then declines as group size increases.
+Overall, the observations support the conclusion that the main controller is qualitatively better than the baseline, but that its current design is limited by congestion in the black zone and by insufficient obstacle avoidance when robots are guided by beacons. 
+These are the main reasons why performance peaks at smaller swarms and then declines as group size increases. Moreover, the obstacle handling setup could drasticly help the score as the obstacles in both removing obstacles from the final zone to unclogging the area for new bots to come in.
 
 \begin{thebibliography}{8}
 \bibitem{lua}
