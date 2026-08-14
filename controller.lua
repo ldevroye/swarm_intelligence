@@ -131,6 +131,8 @@ function SetupStep()
 		robot.leds.set_single_color(13, "green")
 	elseif(BEHAVIOR_STATE == STATE_TUNNEL) then
 		robot.leds.set_single_color(13, "orange")
+	else 
+		robot.leds.set_single_color(13, "blue")
 	end
 
 	robot.range_and_bearing.set_data(1, BEHAVIOR_STATE) -- advertise our current phase to nearby robots
@@ -141,7 +143,7 @@ function SetupStep()
 		add_log("beacon robot seen")
 	end
 
-	if(black_ground_count == 0 and beacon_seen > 0) then
+	if(black_ground_count < 2 and beacon_seen > 0) then
 		add_log("going towards it")
 		if(obstacle_state ~= 0) then
 			ResetObstacleSequence()
@@ -149,8 +151,8 @@ function SetupStep()
 		total_vector = {beacon_vector[1], beacon_vector[2]}
 		if(front_obstacle and close_obstacle_count > 0) then
 			beacon_tangent, idc = ComputeCloseObstacleVectorTangent(total_vector)
-			total_vector[1] = total_vector[1] + 1.1 * beacon_tangent[1]
-			total_vector[2] = total_vector[2] + 1.1 * beacon_tangent[2]
+			total_vector[1] = total_vector[1] + 0.9 * beacon_tangent[1]
+			total_vector[2] = total_vector[2] + 0.9 * beacon_tangent[2]
 		end
 		target_angle = math.atan2(total_vector[2], total_vector[1])
 		speeds = ComputeSpeedFromAngle(target_angle) 
@@ -172,7 +174,7 @@ function SetupStep()
 		end
 	end
 
-	if(BEHAVIOR_STATE == STATE_BLACK_ZONE) then 
+	if(false) then 
 		if(HandleObstacle()) then
 			robot.range_and_bearing.clear_data()
 			return true
@@ -251,9 +253,21 @@ end
 ---------------------------------------------------------------------------
 -- Handle the black-zone state.
 function HandleBlackZoneState()
-	black_tangent = {ground_vector[2], -ground_vector[1]}
-	total_vector[1] = 0.35 * ground_vector[1] + 0.95 * black_tangent[1]
-	total_vector[2] = 0.35 * ground_vector[2] + 0.95 * black_tangent[2]
+	if(black_ground_count < 4 and not IsWallAhead()) then
+		-- Stop immediately as soon as any floor sensor is no longer black.
+		total_vector = ground_vector
+		obstacle_counter = 0
+		return
+	end
+
+	if(obstacle_counter == 0 or obstacle_counter >= 100) then
+		obstacle_counter = 0
+		obstacle_contact = 2 * math.pi * robot.random.uniform()
+	end
+
+	obstacle_counter = obstacle_counter + 1
+	total_vector[1] = math.cos(obstacle_contact)
+	total_vector[2] = math.sin(obstacle_contact)
 end
 
 ---------------------------------------------------------------------------
