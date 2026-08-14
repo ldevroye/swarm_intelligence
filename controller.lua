@@ -78,12 +78,9 @@ function step()
 	else
 		HandleBlackZoneState()
 	end
-	if(BEHAVIOR_STATE == STATE_TUNNEL or BEHAVIOR_STATE == STATE_BLACK_ZONE) then
-		speeds = ComputeMoveTowardTargetSpeeds(total_vector)
-	else
-		target_angle = math.atan2(total_vector[2],total_vector[1]) -- compute the angle from the vector
-		speeds = ComputeSpeedFromAngle(target_angle) -- we now compute the wheel speed necessary to go in the direction of the target angle
-	end
+
+	speeds = ComputeMoveTowardTargetSpeeds(total_vector)
+	
 	if(BEHAVIOR_STATE == STATE_ORIENT) then
 		robot.wheels.set_velocity(0.8 * speeds[1], 0.8 * speeds[2]) -- move slowly while centering between light and obstacles
 	elseif(BEHAVIOR_STATE == STATE_GROUPING) then
@@ -216,8 +213,8 @@ end
 function HandleTunnelState()
 	TARGET_DIST=60
 	-- total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
-	total_vector[1] = lj_vector[1] - 1.5 * light_vector[1] + 5 * ground_vector[1] + 0.10 * obstacle_vector[1] + 0.05 * leader_vector[1]
-	total_vector[2] = lj_vector[2] - 1.5 * light_vector[2] + 5 * ground_vector[2] + 0.10 * obstacle_vector[2] + 0.05 * leader_vector[2]
+	total_vector[1] = lj_vector[1] - 1.5 * light_vector[1] + 5 * ground_vector[1] + 0.05 * leader_vector[1]
+	total_vector[2] = lj_vector[2] - 1.5 * light_vector[2] + 5 * ground_vector[2]  + 0.05 * leader_vector[2]
 	
 	if(obstacle_state == 0 and close_obstacle_count >= 3) then
 		-- Add a sideways correction without losing the main target drive.
@@ -331,6 +328,10 @@ function ComputeCloseObstacleVectorTangent()
 	if(len ~= 0) then
 		tangent_v[1] = close_prox_v[2]
 		tangent_v[2] = -close_prox_v[1]
+		if(tangent_v[1] < 0) then
+			tangent_v[1] = -tangent_v[1]
+			tangent_v[2] = -tangent_v[2]
+		end
 	end
 	len = math.sqrt(tangent_v[1] * tangent_v[1] + tangent_v[2] * tangent_v[2])
 	if(len ~= 0) then
@@ -591,6 +592,10 @@ function ComputeObstacleTangent(obstacle_v)
 	if(len ~= 0) then
 		tangent_v[1] = obstacle_v[2]
 		tangent_v[2] = -obstacle_v[1]
+		if(tangent_v[1] < 0) then
+			tangent_v[1] = -tangent_v[1]
+			tangent_v[2] = -tangent_v[2]
+		end
 	end
 	return tangent_v
 end
