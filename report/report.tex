@@ -1,5 +1,6 @@
 \documentclass[runningheads]{llncs}
 \usepackage{graphicx}
+\usepackage{url}
 
 \begin{document}
 
@@ -38,6 +39,17 @@ sensing and actuation model described in the course notes for Lua and the
 foot-bot API~\cite{lua,footbot}. Its design is intentionally reactive: each
 robot responds to nearby peers, light, floor color, and obstacles rather than
 relying on a global map or centralized coordination.
+
+As a comparison baseline, the repository also contains a simpler gray-zone
+escape controller, implemented in the file \texttt{gray\_escape.lua} (referred
+to here as the gray-scale baseline). In this baseline, a robot performs a
+random walk on white floor until a gray or black floor cue is detected; it then
+stores the escape direction suggested by the proximity field and follows that
+vector until the floor returns to white. This baseline is intentionally minimal:
+it does not use the swarm-level grouping or leader-following rules of the main
+controller, but it provides a direct reference for evaluating how much the main
+controller improves collective tunnelling performance. The full code is available
+in the public repository: \url{https://github.com/ldevroye/swarm_intelligence}.
 
 This follows the same lesson as Conway's Game of Life: simple local rules can
 generate large, surprising, and structured collective behavior.
@@ -179,6 +191,13 @@ size, along with time-series plots for the number of robots in the target and
 the number of obstacles in the target.
 
 \subsection{Planned Settings}
+The main controller is compared against the gray-zone escape baseline, which is
+implemented in \texttt{gray\_escape.lua}. The baseline is a reactive reference
+controller that switches from random exploration on white floor to a directed
+escape run when gray or black ground is detected. This makes it a useful
+comparison point for the more structured swarm behavior of the main controller,
+which relies on local grouping, leader-following, and tunnel-phase transitions.
+
 \begin{table}[htbp]
 \centering
 \caption{Planned experimental settings. Replace placeholders with the final tested configurations.}
@@ -193,10 +212,13 @@ Seeds per setting & 10 & Required \\
 \hline
 Swarm sizes & 5, 10, 20, 30 & Requested test sizes \\
 \hline
-Baseline & \texttt{<insert baseline if any>} & Optional comparison \\
+Baseline & \texttt{gray\_escape.lua} & Gray-scale escape reference controller \\
 \hline
 \end{tabular}
 \end{table}
+
+The source code for both the main controller and the baseline is available in the
+public repository at \url{https://github.com/ldevroye/swarm_intelligence}.
 
 \subsection{Data to Report}
 \begin{table}[htbp]
