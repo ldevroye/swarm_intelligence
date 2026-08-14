@@ -2,6 +2,8 @@
 
 small ARGoS swarm robotics project for a tunnelling task
 
+This repo can be found at [https://github.com/ldevroye/swarm_intelligence](https://github.com/ldevroye/swarm_intelligence)
+
 ## goal
 
 maximize the score

@@ -14,3 +14,5 @@ report/*.synctex.gz
 report/*.fls
 report/*.aux
 report/*.bst
+
+*.png
