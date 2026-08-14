@@ -1,5 +1,3 @@
----- hihi
-
 ---------------------------------------------------------------------------
 -- global variables
 TARGET_DIST = 80 -- the target distance between robots, in cm
@@ -41,7 +39,7 @@ obstacle_cooldown = 0
 obstacle_contact = 0
 obstacle_elapsed = 0
 
-
+--- logs in "logs/"robot.id".log" -> "logs/fb1.log"
 ID = robot.id
 directory="logs/"
 LOG_FILE = directory..ID..".log"
@@ -49,6 +47,43 @@ logf = nil
 current_step = 0;
 
 ---------------------------------------------------------------------------
+--
+--	Author: Louis Devroye (523920) Louis.Devroye@ulb.be
+--	Date: 14/08/26
+--	Tunneling 2nd session project - 'Swarm Intelligence, INFO-H-414' ULB
+--
+---------------------------------------------------------------------------
+-- overall workflow
+-- setup facts
+-- build local force vectors
+-- choose phase
+-- turn vector into wheel speeds
+-- keep motion alive and log state
+-- lj_vector : social pull from nearby robots
+-- light_vector : direction to light source
+-- obstacle_vector : repulsion from nearby obstacles
+-- ground_vector : push toward black target floor
+-- total_vector : weighted sum used for steering
+---------------------------------------------------------------------------
+-- Expected behavior :
+-- Phase 1: orienting -> grouping in the middle with a nudge towards the obstacles
+-- Phase 2: grouping -> wandering a bit while avoiding obstacles and try to search for a group
+-- Phase 3: tunneling (loose flocking) -> wandering more while avoiding obstacles and trying to influence the Phase 2 bots into coming along
+-- Phase 4: Cleaning -> Random walk 
+-- TODO: Phase 4 obstacles cleaning by :
+--		-- random walk
+--		-- hit an obstacle
+--		-- grab it, walk towards light for X step
+--		-- wait until either ground sensor is not full black or X step elapsed
+--		-- spin towards light for the obstacle to be in the grey zone
+--		-- rince
+--		-- repeat
+--
+-- In addition to that, the bots display their states via the LEDs.
+-- A bot in the black zone is a 'beacon' that any bot , not in blackzone, will go towards it (while avoiding obstacles).
+-- Also, the obstacle handling is introduced but non workin as of for now
+---------------------------------------------------------------------------
+
 
 ---------------------------------------------------------------------------
 --Step function
@@ -91,7 +126,8 @@ function step()
 	end
 
 
-	-- unlock robots
+	-- low-speed fallback
+	-- fuzz inducer
 	if(BEHAVIOR_STATE ~= STATE_BLACK_ZONE and math.abs(final_left) + math.abs(final_right) < 1.0) then
 		if(robot.random.uniform() < 0.5) then
 			final_left = 0.5 * WHEEL_SPEED
@@ -114,7 +150,12 @@ function LogStepStart()
 end
 
 ---------------------------------------------------------------------------
--- Prepare the step, including obstacle handling if a grab maneuver is active.
+-- tick counter
+-- sample floor and front obstacle
+-- update phase from black floor and cooldown
+-- broadcast phase to neighbors
+-- steer toward beacon if visible
+-- start local grab flow if needed
 function SetupStep()
 	current_step = current_step + 1
 	robot.colored_blob_omnidirectional_camera.enable()
@@ -122,22 +163,26 @@ function SetupStep()
 	edge_detected = black_ground_count < 4 and black_ground_count > 0
 	front_obstacle, front_left, front_right, front_centered, front_grabbable, front_robot_block, front_wall_block = ProcessFrontObstacle()
 	
+	-- leave black zone state when black floor disappears
 	if(BEHAVIOR_STATE == STATE_BLACK_ZONE and black_ground_count == 0) then
 		BEHAVIOR_STATE = STATE_TUNNEL
 		black_floor_counter = 0
 		black_walk_counter = 0
 	end
 
+	-- cooldown timer for obstacle retries
 	if(obstacle_cooldown > 0) then
 		obstacle_cooldown = obstacle_cooldown - 1
 	end
 
+	-- count dark-floor persistence before committing to target area
 	if(BEHAVIOR_STATE ~= STATE_BLACK_ZONE and black_ground_count > 0) then
 		black_floor_counter = black_floor_counter + 1
 	else
 		black_floor_counter = 0
 	end
 
+	-- black-zone transition
 	if(black_floor_counter >= BLACK_FLOOR_STEPS) then
 		BEHAVIOR_STATE = STATE_BLACK_ZONE
 		black_floor_counter = 0
@@ -160,6 +205,8 @@ function SetupStep()
 		add_log("beacon robot seen")
 	end
 
+	-- beacon override
+	-- weak dark floor + beacon seen => aim at target beacon
 	if(black_ground_count < 2 and beacon_seen > 0) then
 		add_log("going towards it")
 		if(obstacle_state ~= 0) then
@@ -178,6 +225,8 @@ function SetupStep()
 		return true
 	end
 
+	-- start grab only in black zone
+	-- safe front, centered obstacle, no cooldown remaining
 	if(BEHAVIOR_STATE == STATE_BLACK_ZONE and obstacle_state == 0 and obstacle_cooldown == 0 and front_obstacle and front_grabbable) then
 		obstacle_state = 1
 		obstacle_counter = 0
@@ -190,6 +239,7 @@ function SetupStep()
 		end
 	end
 
+	-- TODO: fix handling obstacles to clear black zone
 	if(false) then 
 		if(HandleObstacle()) then
 			robot.range_and_bearing.clear_data()
@@ -215,19 +265,24 @@ function ResetObstacleSequence()
 end
 
 ---------------------------------------------------------------------------
--- Handle the orient state.
+-- social pull + light pull + small obstacle tangent
+-- keep heading stable before grouping starts
 function HandleOrientState()
 	obstacle_tangent = ComputeObstacleTangent(obstacle_vector)
 	total_vector[1] = 0.9 * lj_vector[1] + 0.35 * light_vector[1] + 0.10 * obstacle_vector[1] + 0.05 * obstacle_tangent[1]
 	total_vector[2] = 0.90 * lj_vector[2] + 0.35 * light_vector[2] + 0.10 * obstacle_vector[2] + 0.05 * obstacle_tangent[2]
 	orientation_counter = orientation_counter + 1
+	-- fixed timing gate
 	if(orientation_counter >= ORIENTATION_STEPS) then
 		BEHAVIOR_STATE = STATE_GROUPING
 	end
 end
 
 ---------------------------------------------------------------------------
--- Handle the grouping state.
+-- keep target spacing from neighbors
+-- pull back from light to avoid overshoot
+-- add sideways obstacle drift when needed
+-- move to tunnel once cluster holds
 function HandleGroupingState()
 	leader_vector = ProcessRABLeaders() -- grouping robots can pull toward the local swarm structure
 	total_vector[1] = 0.6 * lj_vector[1] - 0.5 * light_vector[1] + 0.2 * leader_vector[1]
@@ -235,11 +290,12 @@ function HandleGroupingState()
 
 	if(front_obstacle) then
 		close_tangent, nbr = ComputeCloseObstacleVectorTangent(total_vector)
-		-- Add a sideways correction without losing the main target drive.
+		-- add sideways drift to slip around local obstacle without losing main drive
 		total_vector[1] = total_vector[1] + 0.5 * close_tangent[1]
 		total_vector[2] = total_vector[2] + 0.5 * close_tangent[2]
 	end
 
+	-- swarm stability trigger
 	if(FLOCKING_CONDITION == 1) then
 		flocking_trigger_counter = flocking_trigger_counter + 1
 		if(flocking_trigger_counter >= FLOCKING_TRIGGER_THRESHOLD) then
@@ -251,15 +307,18 @@ function HandleGroupingState()
 end
 
 ---------------------------------------------------------------------------
--- Handle the tunnel state.
+-- push toward black zone while staying with swarm
+-- keep small lateral obstacle drift
 function HandleTunnelState()
 	TARGET_DIST=60
+	-- main drive
+	-- swarm attraction + light repulsion + leader pull
 	-- total_vector[1] = lj_vector[1] - 1.05 * light_vector[1] + 0.05 * obstacle_vector[1] + 0.45 * ground_vector[1] + 0.15 * leader_vector[1]
 	total_vector[1] = 0.4 * lj_vector[1] - 1.05 * light_vector[1] + 0.10 * leader_vector[1]
 	total_vector[2] = 0.4 * lj_vector[2] - 1.05 * light_vector[2] + 0.10 * leader_vector[1]
 	
 	if(front_obstacle) then
-		-- Add a sideways correction without losing the main target drive.
+		-- sideways nudge around obstacle while keeping heading
 		close_tangent, nbr = ComputeCloseObstacleVectorTangent(total_vector)
 		total_vector[1] = total_vector[1] + 0.3 * close_tangent[1]
 		total_vector[2] = total_vector[2] + 0.3 * close_tangent[2]
@@ -267,15 +326,18 @@ function HandleTunnelState()
 end
 
 ---------------------------------------------------------------------------
--- Handle the black-zone state.
+-- commit to dark floor when long often enough
+-- drift with random heading until wall contact
+-- fall back to tunnel if dark floor disappears
 function HandleBlackZoneState()
 	if(black_ground_count < 4 and not IsWallAhead()) then
-		-- Stop immediately as soon as any floor sensor is no longer black.
+		-- leave heading as soon as dark floor fades
 		total_vector = ground_vector
 		obstacle_counter = 0
 		return
 	end
 
+	-- random direction in a bounded cone for drift
 	if(obstacle_counter == 0 or obstacle_counter >= 100) then
 		obstacle_counter = 0
 		obstacle_contact = (robot.random.uniform() - 0.5) * (math.pi / 2)
@@ -286,6 +348,7 @@ function HandleBlackZoneState()
 	total_vector[2] = math.sin(obstacle_contact)
 
 	if(IsWallAhead()) then
+		-- push away from wall contact, then renormalize
 		total_vector[1] = total_vector[1] + 1.5 * obstacle_vector[1]
 		total_vector[2] = total_vector[2] + 1.5 * obstacle_vector[2]
 		len = math.sqrt(total_vector[1] * total_vector[1] + total_vector[2] * total_vector[2])
@@ -297,21 +360,24 @@ function HandleBlackZoneState()
 end
 
 ---------------------------------------------------------------------------
---This function computes the vector (normalized) that points towards the light source
+-- light vector
+-- sum sensor contributions
+-- each sensor gives a weighted direction to the light
+-- normalize to unit vector for steering
 function ComputeVectorToLight()
 	light_v = {0,0}
 	for i = 1, 24 do 
-		-- we calculate the x and y components given length and angle
+		-- sensor direction * light intensity = local contribution
 		vec = {
 			x = robot.light[i].value * math.cos(robot.light[i].angle),
 			y = robot.light[i].value * math.sin(robot.light[i].angle)
 		}
-		-- we sum the vectors into a variable called accumul
+		-- sum x and y contributions from all sensors
 		light_v[1] = light_v[1] + vec.x
 		light_v[2] = light_v[2] + vec.y
 	end
 	len = math.sqrt(light_v[1] * light_v[1] + light_v[2] * light_v[2])
-	-- we normalize the vector
+	-- unit vector keeps only direction, not brightness
 	if(len ~= 0) then 
 		light_v[1] = light_v[1] / len
    		light_v[2] = light_v[2] / len
@@ -320,10 +386,14 @@ function ComputeVectorToLight()
 end	
 
 ---------------------------------------------------------------------------
--- This function computes a repulsion vector from nearby obstacles using the proximity sensors.
+-- proximity vector
+-- each close sensor pushes away from that direction
+-- sum all pushes, then normalize to a unit vector
 function ComputeVectorFromProximity()
 	prox_v = {0,0}
 	for i = 1, 24 do
+		-- sensor value is strength of obstacle on that side
+		-- minus sign makes the vector point away from the obstacle
 		prox_v[1] = prox_v[1] - robot.proximity[i].value * math.cos(robot.proximity[i].angle)
 		prox_v[2] = prox_v[2] - robot.proximity[i].value * math.sin(robot.proximity[i].angle)
 	end
@@ -336,7 +406,9 @@ function ComputeVectorFromProximity()
 end
 
 ---------------------------------------------------------------------------
--- This function computes a repulsion vector only from very close obstacles.
+-- close obstacle tangent
+-- keep only near obstacles
+-- turn sideways around them instead of pushing straight through
 function ComputeCloseObstacleVectorTangent()
 	close_prox_v = {0,0}
 	tangent_v = {0,0}
@@ -345,6 +417,7 @@ function ComputeCloseObstacleVectorTangent()
 	for i = 1, 24 do
 		if(robot.proximity[i].value >= OBSTACLE_CLOSE_THRESHOLD) then
 			close_count = close_count + 1
+			-- use strong local repulsion to build a side-slip vector
 			close_prox_v[1] = close_prox_v[1] - robot.proximity[i].value * math.cos(robot.proximity[i].angle)
 			close_prox_v[2] = close_prox_v[2] - robot.proximity[i].value * math.sin(robot.proximity[i].angle)
 		end
@@ -354,6 +427,7 @@ function ComputeCloseObstacleVectorTangent()
 	end
 	len = math.sqrt(close_prox_v[1] * close_prox_v[1] + close_prox_v[2] * close_prox_v[2])
 	if(len ~= 0) then
+		-- rotate repulsion by 90 degrees to get tangent drift
 		tangent_v[1] = close_prox_v[2]
 		tangent_v[2] = -close_prox_v[1]
 	end
@@ -366,14 +440,16 @@ function ComputeCloseObstacleVectorTangent()
 end
 
 ---------------------------------------------------------------------------
--- This function executes the obstacle-grabbing maneuver and returns true while it is active.
+-- obstacle flow
+-- entry point for grab, lock, push and release sequence
+-- returns true only while a sequence is active
 function HandleObstacle()
 	if (true) then
 		return false
 	end
 
 	if(obstacle_state == 0) then
-		-- No grab sequence in progress.
+		-- no active sequence
 		return false
 	end
 
@@ -411,7 +487,9 @@ function ResetObstacleSequence()
 end
 
 ---------------------------------------------------------------------------
--- Abort the sequence if it has run for too long, except for the black-zone carry phase.
+-- obstacle abort gate
+-- stop long or invalid grab attempts
+-- keep black-zone carry phase alive only for a bounded time
 function ShouldAbortObstacleSequence()
 	if(obstacle_state == 0) then
 		return false
@@ -429,7 +507,8 @@ function ShouldAbortObstacleSequence()
 end
 
 ---------------------------------------------------------------------------
--- Approach an obstacle until it is centered and close enough to lock.
+-- slow advance to obstacle
+-- lock only once centered and strong enough
 function HandleObstacleApproach()
 	robot.turret.set_position_control_mode()
 	robot.turret.set_rotation(0)
@@ -440,6 +519,7 @@ function HandleObstacleApproach()
 		return
 	end
 	if(front_obstacle) then
+		-- accumulate front pressure to judge alignment and grip quality
 		obstacle_contact = obstacle_contact + front_left + front_right
 	else
 		obstacle_contact = 0
@@ -447,13 +527,16 @@ function HandleObstacleApproach()
 	obstacle_counter = obstacle_counter + 1
 	obstacle_elapsed = obstacle_elapsed + 1
 	if((obstacle_counter >= OBSTACLE_APPROACH_STEPS and obstacle_contact >= OBSTACLE_CONTACT_THRESHOLD) or (front_close_count >= 2 and front_obstacle)) then
+		-- enough pressure and alignment -> lock
 		obstacle_state = 2
 		obstacle_counter = 0
 	end
 end
 
 ---------------------------------------------------------------------------
--- Close the gripper once the obstacle is sufficiently aligned.
+-- stop motion
+-- close gripper
+-- wait a fixed number of steps before turning
 function HandleObstacleLock()
 	robot.wheels.set_velocity(0,0)
 	robot.turret.set_position_control_mode()
@@ -462,13 +545,15 @@ function HandleObstacleLock()
 	obstacle_counter = obstacle_counter + 1
 	obstacle_elapsed = obstacle_elapsed + 1
 	if(obstacle_counter >= OBSTACLE_LOCK_STEPS) then
+		-- lock completed, switch to carry turn
 		obstacle_state = 3
 		obstacle_counter = 0
 	end
 end
 
 ---------------------------------------------------------------------------
--- Carry the obstacle until the light is reached or the push timeout expires.
+-- keep obstacle while turning toward light
+-- quit on light hit or timeout
 function HandleObstaclePushToLight()
 	robot.turret.set_passive_mode()
 	speeds = ComputePushTowardLightSpeeds()
@@ -479,6 +564,7 @@ function HandleObstaclePushToLight()
 	if(GetLightStrength() >= OBSTACLE_LIGHT_THRESHOLD or 
 	  obstacle_counter >= OBSTACLE_PUSH_STEPS or 
 	  black_ground_count < 4) then
+		-- release when target reached or push budget is spent
 		obstacle_state = 4
 		obstacle_counter = 0
 	end
@@ -486,8 +572,10 @@ function HandleObstaclePushToLight()
 end
 
 ---------------------------------------------------------------------------
--- Release the obstacle once the light has been reached or the push phase timed out.
+-- stop, unlock, reset cooldown
 function HandleObstacleRelease()
+
+	-- TODO: add spinning towards light so obstacle gets put in gray zone
 	robot.turret.set_position_control_mode()
 	robot.turret.set_rotation(0)
 	robot.wheels.set_velocity(0, 0)
@@ -500,7 +588,9 @@ function HandleObstacleRelease()
 end
 
 ---------------------------------------------------------------------------
--- This function checks whether a cylinder-like obstacle is directly in front of the robot.
+-- front obstacle scan
+-- look at 24 proximity sensors in front arc
+-- decide if obstacle is in front, centered, grab-safe, and wall-like
 function ProcessFrontObstacle()
 	front_obstacle = false
 	front_centered = false
@@ -530,6 +620,7 @@ function ProcessFrontObstacle()
 	end
 	front_sum = front_left + front_right
 	if(front_obstacle and front_sum > 0) then
+		-- balance close to 0 means obstacle is centered in front
 		front_balance = math.abs(front_left - front_right) / front_sum
 		if(front_balance < 0.35 and front_sum >= OBSTACLE_CONTACT_THRESHOLD) then
 			front_centered = true
@@ -548,7 +639,9 @@ function ProcessFrontObstacle()
 end
 
 ---------------------------------------------------------------------------
--- Heuristic wall detection: too many active front proximity sensors means broad contact.
+-- wall gate
+-- too many active front sensors means broad wall contact
+-- heuristic as there is no sensor for walls specificly
 function IsWallAhead()
 	active_count = 0
 	for i = 1, 24 do
@@ -562,8 +655,9 @@ function IsWallAhead()
 	return active_count >= WALL_MIN_ACTIVE_SENSORS
 end
 
-
--- Block grabbing if a robot is centered in front of us.
+---------------------------------------------------------------------------
+-- robot block gate
+-- do not grab when another robot sits in front
 function IsRobotAhead()
 	for i = 1, #robot.range_and_bearing do
 		range = robot.range_and_bearing[i].range
@@ -576,11 +670,14 @@ function IsRobotAhead()
 end
 
 ---------------------------------------------------------------------------
--- This function computes a vector toward robots that have already advanced.
+-- leader vector
+-- pull toward robots already in tunnel or black zone
+-- use bearing angle as direction, then normalize
 function ProcessRABLeaders()
 	leader_v = {0,0}
 	for i = 1, #robot.range_and_bearing do
 		if(robot.range_and_bearing[i].data[1] >= STATE_TUNNEL) then
+			-- bearing gives direction to leader, unit vector keeps heading only
 			leader_v[1] = leader_v[1] + math.cos(robot.range_and_bearing[i].horizontal_bearing)
 			leader_v[2] = leader_v[2] + math.sin(robot.range_and_bearing[i].horizontal_bearing)
 		end
@@ -594,12 +691,14 @@ function ProcessRABLeaders()
 end
 
 --------------------------------------------------------------------------
--- This function computes a direct vector toward the first black-zone beacon seen by the camera.
+-- beacon vector
+-- first green beacon seen by camera becomes heading target
 function ProcessBlackZoneBeacon()
 	beacon_v = {0,0}
 	for i = 1, #robot.colored_blob_omnidirectional_camera do
 		blob = robot.colored_blob_omnidirectional_camera[i]
 		if(blob.color.green > 200 and blob.color.red < 80 and blob.color.blue < 80) then
+			-- beacon angle gives exact heading to green target
 			beacon_v[1] = math.cos(blob.angle)
 			beacon_v[2] = math.sin(blob.angle)
 			return beacon_v, 1
@@ -609,12 +708,14 @@ function ProcessBlackZoneBeacon()
 end
 
 ---------------------------------------------------------------------------
--- This function computes a tangent vector around obstacles so the swarm can
--- move along the white-zone obstacle field instead of pushing straight through it.
+-- obstacle tangent
+-- rotate repulsion by 90 degrees
+-- this keeps the robot sliding around obstacles instead of hitting head-on
 function ComputeObstacleTangent(obstacle_v)
 	tangent_v = {0,0}
 	len = math.sqrt(obstacle_v[1] * obstacle_v[1] + obstacle_v[2] * obstacle_v[2])
 	if(len ~= 0) then
+		-- 90 deg turn : x,y -> y,-x
 		tangent_v[1] = obstacle_v[2]
 		tangent_v[2] = -obstacle_v[1]
 	end
@@ -622,13 +723,16 @@ function ComputeObstacleTangent(obstacle_v)
 end
 
 ---------------------------------------------------------------------------
--- This function computes a vector toward the black floor using the motor-ground sensors.
+-- ground vector
+-- active black sensors produce a pull toward the dark patch
+-- sensor offset gives direction of the black region
 function ProcessGround()
 	ground_v = {0,0}
 	black_count = 0
 	for i = 1, 4 do
 		if(robot.motor_ground[i].value == 0) then
 			black_count = black_count + 1
+			-- sensor offset points to the black patch relative to robot frame
 			ground_v[1] = ground_v[1] + robot.motor_ground[i].offset.x
 			ground_v[2] = ground_v[2] + robot.motor_ground[i].offset.y
 		end
@@ -642,7 +746,8 @@ function ProcessGround()
 end
 
 ---------------------------------------------------------------------------
--- This function returns the strongest light reading seen by the sensors.
+-- max light strength
+-- keep strongest sensor value as the local light intensity
 function GetLightStrength()
 	strength = robot.light[1].value
 	for i = 2, 24 do 
@@ -653,25 +758,30 @@ function GetLightStrength()
 end
 
 ---------------------------------------------------------------------------
---This function computes the necessary wheel speed to go in the direction of the desired angle.
+-- taken from exercices
+-- wheel speed from angle
+-- dotProduct = forward_dir · target_dir
+-- if target is behind, rotate in place
+-- angularVelocity = KProp * angle
+-- left and right wheels get opposite angular terms
 function ComputeSpeedFromAngle(angle)
     dotProduct = 0.0;
     KProp = 20;
     wheelsDistance = 0.14;
 
-    -- if the target angle is behind the robot, we just rotate, no forward motion
+    -- behind target => no forward drive, rotate only
     if angle > math.pi/2 or angle < -math.pi/2 then
         dotProduct = 0.0;
     else
-    -- else, we compute the projection of the forward motion vector with the desired angle
+    -- forward_dir · target_dir keeps only the forward component
         forwardVector = {math.cos(0), math.sin(0)}
         targetVector = {math.cos(angle), math.sin(angle)}
         dotProduct = forwardVector[1]*targetVector[1]+forwardVector[2]*targetVector[2]
     end
 
-	 -- the angular velocity component is the desired angle scaled linearly
+	 -- linear angular error term
     angularVelocity = KProp * angle;
-    -- the final wheel speeds are compute combining the forward and angular velocities, with different signs for the left and right wheel.
+    -- left and right wheels use opposite angular signs to steer toward target
     speeds = {dotProduct * WHEEL_SPEED - angularVelocity * wheelsDistance, dotProduct * WHEEL_SPEED + angularVelocity * wheelsDistance}
 
 	-- clamp wheel speeds to allowed range
@@ -688,16 +798,19 @@ end
 ---------------------------------------------------------------------------
 
 ---------------------------------------------------------------------------
--- In this function, we take all distances of the other robots and apply the lennard-jones potential.
--- We then sum all these vectors to obtain the final angle to follow in order to go to the place with the minimal potential
+-- taken from exercices
+-- lj swarm force
+-- for each neighbor, apply lennard-jones potential
+-- sum vectors to get net attraction/repulsion to nearby robots
 function ProcessRAB_LJ()
 	FLOCKING_CONDITION = 0
 	sum_vector = {0,0}
 	neighbors_in_range_counter = 0
 	for i = 1,#robot.range_and_bearing do -- for each robot seen
-		lj_value = ComputeLennardJones(robot.range_and_bearing[i].range) -- compute the lennard-jones value
-		sum_vector[1] = sum_vector[1] + math.cos(robot.range_and_bearing[i].horizontal_bearing)*lj_value -- sum the x components of the vectors
-		sum_vector[2] = sum_vector[2] + math.sin(robot.range_and_bearing[i].horizontal_bearing)*lj_value -- sum the y components of the vectors
+		lj_value = ComputeLennardJones(robot.range_and_bearing[i].range)
+		-- direction to neighbor * lj force gives x and y social pull
+		sum_vector[1] = sum_vector[1] + math.cos(robot.range_and_bearing[i].horizontal_bearing)*lj_value
+		sum_vector[2] = sum_vector[2] + math.sin(robot.range_and_bearing[i].horizontal_bearing)*lj_value
 		if(robot.range_and_bearing[i].range < TARGET_DIST + ACCEPTED_DIST and robot.range_and_bearing[i].range > TARGET_DIST - ACCEPTED_DIST) then
 			neighbors_in_range_counter = neighbors_in_range_counter + 1
 			if(neighbors_in_range_counter >= NEIGHBORS_AT_TARG_DIST) then
@@ -706,6 +819,7 @@ function ProcessRAB_LJ()
 		end		
 	end
 	if(neighbors_in_range_counter < NEIGHBORS_AT_TARG_DIST) then
+		-- weak local flocking when too few neighbors are in target band
 		sum_vector[1] = 0.7 * sum_vector[1]
 		sum_vector[2] = 0.7 * sum_vector[2]
 	end
@@ -718,10 +832,11 @@ function ProcessRAB_LJ()
 
 end
 ---------------------------------------------------------------------------
-
----------------------------------------------------------------------------
--- This function take the distance and compute the lennard-jones potential.
--- The parameters are defined at the top of the script
+-- taken from exercices
+-- lj math
+-- repulsion when distance is too small
+-- attraction when distance is a bit larger than target
+-- formula is based on target distance and epsilon scaling
 function ComputeLennardJones(distance)
 	if(distance == nil) then
 		return 0
@@ -730,13 +845,15 @@ function ComputeLennardJones(distance)
 	if(distance < 0.01) then
 		distance = 0.01
 	end
+	-- inv distance term makes force stronger as neighbors get closer
+	-- the squared and fourth-power terms create a soft attraction around target distance
 	return -(4*EPSILON/distance * (math.pow(TARGET_DIST/distance,4) - math.pow(TARGET_DIST/distance,2)));
 end
 ---------------------------------------------------------------------------
 
 ---------------------------------------------------------------------------
--- This function computes the global potential.
--- In this case the global potential is simply the distance to the center of the arena
+-- global potential
+-- trivial placeholder for center-distance heuristic
 function ComputeGlobalPotential(distance)
    return distance;
 end
@@ -776,6 +893,9 @@ end
 function destroy()
 end
 
+
+-----------------------------------------
+-- small logging function to append to the file
 function add_log(log)
 	logf = io.open(LOG_FILE, "a")
 	if (robot.id==ID and logf) then
