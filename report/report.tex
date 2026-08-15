@@ -54,29 +54,6 @@ in the public repository: \url{https://github.com/ldevroye/swarm_intelligence}.
 This follows the same lesson as Conway's Game of Life: simple local rules can
 generate large, surprising, and structured collective behavior.
 
-\section{Problem Definition and Requirements}
-The arena is a rectangular environment with a white starting area on the left,
-an obstacle field in the middle, and a black target area on the right. The
-project brief specifies a 1{,}000-second run, corresponding to 10{,}000 ARGoS
-simulation steps. This horizon is long enough to observe both the initial swarm
-assembly phase and the later target-entry dynamics.
-
-The available sensors and actuators include proximity, light, motor-ground,
-range-and-bearing, colored-blob omnidirectional camera, wheels, LEDs, gripper,
-and turret. The brief emphasizes cooperative behavior, use of swarm robotics
-principles, repeated runs over 10 seeds, and a scaling study over several swarm
-sizes. In addition to the final score, the project data file records the number
-of robots and obstacles in the target at each step.
-
-\subsection{Evaluation Criteria}
-The main quantities to report are:
-\begin{itemize}
-	\item final score as a function of swarm size,
-	\item number of robots in the target over time,
-	\item number of obstacles in the target over time,
-	\item variability across the 10 repetitions for each configuration.
-\end{itemize}
-
 \section{Controller Overview}
 The controller is organized as a state machine with four phases: orientation,
 grouping, tunnel progression, and black-zone motion. The transition logic is
@@ -99,15 +76,13 @@ range-and-bearing messages. In practice, the green beacon functions as a local
 recruitment signal: robots in the orientation, grouping, or tunnel phases bias
 their motion toward nearby green beacons, which indicates that a peer has already
 reached the target area and can serve as a guide for the rest of the swarm.
-Once a robot is inside the black zone, it is no longer attracted by the beacon as 
-a destination signal; instead, it remains in the target region and continues its 
+Once a robot is inside the black zone, it is no longer attracted by the beacon as
+a destination signal; instead, it remains in the target region and continues its
 local randomized motion while maintaining boundary avoidance.
 To prevent stalled configurations and symmetric deadlocks, the controller also
 adds a small amount of random heading fuzzing to the motion command; this keeps
 robots from remaining trapped in a local equilibrium when congestion or obstacle
-alignment would otherwise freeze the swarm. This allows the swarm to coordinate 
-better although the obstacle avoidance when reaching for a beacon could use a bit 
-of fine tuning.
+alignment would otherwise freeze the swarm.
 
 Per-robot logs are also written to the \texttt{logs/} directory, one file per
 robot (for example \texttt{logs/fb1.log}), with a line appended at each
@@ -168,22 +143,6 @@ the robot follows a randomized walk-like motion with local corrections instead
 of a precise global plan.
 
 \section{Implementation Details}
-\subsection{Sensors and Local Rules}
-The controller uses the following signals:
-\begin{itemize}
-	\item \textbf{Proximity sensors}: obstacle repulsion, obstacle tangential motion, and wall/robot blocking.
-	\item \textbf{Light sensors}: orientation toward the ambient cue.
-	\item \textbf{Motor-ground sensors}: detection of the black target zone.
-	\item \textbf{Range-and-bearing}: local communication and Lennard--Jones spacing.
-	\item \textbf{Colored-blob camera}: detection of a green beacon emitted by robots already in the black zone.
-	\item \textbf{LEDs}: visual phase feedback during simulation.
-\end{itemize}
-
-The wheel command is computed from the target vector angle with a simple
-proportional steering law. The result is clamped to the allowed wheel speed.
-This keeps the behavior easy to reason about and consistent with the reactive
-style encouraged in the project brief.
-
 \subsection{State Transitions}
 The state machine is driven by local counts and thresholds rather than by global
 knowledge. The most relevant conditions are:
